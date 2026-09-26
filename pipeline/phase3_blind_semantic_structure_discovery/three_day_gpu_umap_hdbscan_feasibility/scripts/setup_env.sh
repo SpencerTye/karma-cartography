@@ -1,16 +1,8 @@
 #!/usr/bin/env bash
-# ---------------------------------------------------------------------------
-# Isolated RAPIDS cuML environment for the three-day GPU UMAP + HDBSCAN
-# feasibility test (Phase 3). Creates a fresh uv venv; does NOT touch the
-# existing Phase 2 (socialmediadgg-phase2) or FAISS (faiss-bench) venvs.
-#
-# Reproducible: pip wheels from PyPI + the NVIDIA Python Package Index.
-# Records exact resolved versions to <environment>/packages.txt.
-#
-# Overridable via env vars:
-#   RAPIDS_VENV   target venv path        (default ~/venvs/rapids-umap-hdbscan)
-#   ENV_OUT_DIR   environment capture dir (default the deliverable environment/)
-# ---------------------------------------------------------------------------
+# RAPIDS cuML environment for the three-day GPU UMAP + HDBSCAN feasibility test (Phase 3).
+# Creates a separate uv venv from PyPI and the NVIDIA index, then records package versions and
+# GPU/CUDA details in ../environment/.
+# Env (optional): RAPIDS_VENV (default ~/venvs/rapids-umap-hdbscan), ENV_OUT_DIR (default ../environment).
 set -uo pipefail
 
 VENV="${RAPIDS_VENV:-$HOME/venvs/rapids-umap-hdbscan}"
@@ -51,7 +43,7 @@ if [ "$CORE_RC" -ne 0 ]; then
 fi
 
 # ---- optional: CPU hdbscan package (only to materialize tree diagnostics
-# via cuML's *_tree_ .to_pandas(); does NOT affect the GPU clustering) ----
+# via cuML's *_tree_ .to_pandas(); does not affect the GPU clustering) ----
 log "installing CPU hdbscan (for condensed/linkage/MST export helpers) ..."
 UV_INDEX_STRATEGY=unsafe-best-match "$UV" pip install --python "$PYBIN" hdbscan 2>&1 | tee -a "$LOG" \
   || log "WARNING: hdbscan CPU package failed to install; tree .to_pandas() export may be limited"

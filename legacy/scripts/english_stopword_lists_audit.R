@@ -1,11 +1,8 @@
-# English stopword lists: audit of the evidence structure behind the consensus rankings
-#
-# Read-only over the outputs of english_stopword_lists.R (r_analysis_outputs/stopword_lists/).
-# Reads the delivered tables and the extracted lists (lists/*.txt), re-derives the consensus
-# variables and tiers from the delivered master membership table as a reproduction check, and
-# writes audit tables under r_analysis_outputs/stopword_lists_audit/. Nothing under
-# stopword_lists/ is modified; no source list is re-acquired; no family assignment is changed;
-# no keep/remove decision is made; the Reddit corpus is not read; no topic model is run.
+# Audits the evidence behind the stopword consensus rankings from english_stopword_lists.R.
+# Inputs: tables and extracted lists (lists/*.txt) under r_analysis_outputs/stopword_lists/, read only.
+# Re-derives the consensus variables and tiers from the master membership table as a reproduction
+# check, then writes audit tables to r_analysis_outputs/stopword_lists_audit/.
+# Env: KC_REPO_ROOT (project root).
 
 # ---- Setup ----
 suppressPackageStartupMessages({
@@ -16,7 +13,7 @@ invisible(Sys.setlocale("LC_COLLATE", "C"))   # reproducible string ordering (sa
 log_line  <- function(...) cat(format(Sys.time(), "%H:%M:%S"), ..., "\n")
 
 project_dir <- Sys.getenv("KC_REPO_ROOT", unset = getwd())
-src_dir     <- file.path(project_dir, "r_analysis_outputs/stopword_lists")      # delivered analysis (read-only)
+src_dir     <- file.path(project_dir, "r_analysis_outputs/stopword_lists")      # earlier analysis output (read-only)
 src_tab     <- file.path(src_dir, "tables")
 src_lists   <- file.path(src_dir, "lists")
 out_dir     <- file.path(project_dir, "r_analysis_outputs/stopword_lists_audit")
@@ -40,8 +37,8 @@ add_check <- function(group, check, measured, pass) checks[[length(checks) + 1L]
 `%||%` <- function(a, b) if (is.null(a) || length(a) == 0) b else a
 collapse_words <- function(x) paste(sort(x), collapse = " ")
 
-# ---- Inputs (delivered tables, read-only) ----
-log_line("reading delivered tables")
+# ---- Inputs (existing tables, read-only) ----
+log_line("reading tables")
 input_tables <- c("master_membership", "provenance_table", "list_summary", "family_definitions", "family_review_flags", "duplicate_groups",
                   "near_duplicates", "jaccard_pairs_all", "jaccard_matrix", "secondary_crosschecks", "normalisation_log", "acquisition_log",
                   "excluded_candidates", "tier_summary", "run_info", "checks")
@@ -67,7 +64,7 @@ checks_src  <- rd("checks", col_types = cols(.default = col_character(), pass = 
 for (col in c("families_any", "families_all")) master[[col]] <- coalesce(master[[col]], "")
 for (col in c("changes", "dropped")) norm_log[[col]] <- coalesce(norm_log[[col]], "")
 
-# Membership matrix of the 45 included lists, exactly as delivered (normalised entries, 0/1).
+# Membership matrix of the 45 included lists, as saved (normalised entries, 0/1).
 included_ids <- sub("^in_", "", grep("^in_", names(master), value = TRUE))
 Mx <- as.matrix(master[, paste0("in_", included_ids)]); dimnames(Mx) <- list(master$entry, included_ids); storage.mode(Mx) <- "integer"
 prov_inc  <- provenance |> filter(list_id %in% included_ids)
@@ -83,7 +80,7 @@ add_check("inputs", "45 included lists in master_membership.csv, 32 firm and 13 
 add_check("inputs", "11 families with one root list each", sprintf("%d families, %d roots", length(fam_names), length(root_ids)), length(fam_names) == 11 && length(root_ids) == 11 && setequal(family_of[root_ids], fam_names))
 add_check("inputs", "list sizes in the membership matrix equal n_unique_entries in list_summary.csv", "", all(sz[included_ids] == list_summary$n_unique_entries[match(included_ids, list_summary$list_id)]))
 
-# Pairwise Jaccard recomputed from the membership matrix (must equal the delivered matrix).
+# Pairwise Jaccard recomputed from the membership matrix (must equal the saved matrix).
 inter <- crossprod(Mx); uni <- outer(sz, sz, "+") - inter; J <- inter / uni
 Jd <- as.matrix(jaccard_tab[, -1]); rownames(Jd) <- jaccard_tab$list_id
 add_check("inputs", "Jaccard matrix recomputed from master_membership equals jaccard_matrix.csv (4 dp)", max(abs(round(J[rownames(Jd), colnames(Jd)], 4) - Jd)), max(abs(round(J[rownames(Jd), colnames(Jd)], 4) - Jd)) < 1e-9)
@@ -93,9 +90,9 @@ relation <- function(a, b) {
   list(jaccard = round(j, 4), relationship = r, n_a = length(A), n_b = length(B), intersection = i, only_a = sort(setdiff(A, B)), only_b = sort(setdiff(B, A)))
 }
 
-# ---- Reproduction of the consensus variables and tiers from the delivered matrix ----
-# DOES  : re-implements lines 541-578 of english_stopword_lists.R on the delivered 0/1 matrix, for any
-#         subset of lists. With all 45 lists the result must equal the delivered columns exactly.
+# ---- Reproduction of the consensus variables and tiers from the saved matrix ----
+# Re-implements lines 531-568 of english_stopword_lists.R on the saved 0/1 matrix for any subset of
+# lists. With all 45 lists the result must match the original columns exactly.
 consensus_stats <- function(ids) {
   X <- Mx[, ids, drop = FALSE]; fams <- family_of[ids]; fn <- sort(unique(fams))
   set_hash <- vapply(ids, function(id) digest(sort(rownames(X)[X[, id] == 1L]), algo = "sha256"), character(1))
@@ -110,7 +107,7 @@ consensus_stats <- function(ids) {
                       families_any = apply(fam_any, 1, function(r) paste(fn[r == 1], collapse = ";")), families_all = apply(fam_all, 1, function(r) paste(fn[r == 1], collapse = ";"))),
        set_hash = set_hash, rep_ids = rep_ids, fam_any = fam_any, fam_all = fam_all, families = fn, roots = roots)
 }
-choose_tiers <- function(cnt, ratio = tier_ratio) {     # verbatim logic of the source script (lines 565-575)
+choose_tiers <- function(cnt, ratio = tier_ratio) {     # verbatim logic of the source script (lines 555-565)
   vals <- sort(unique(cnt), decreasing = TRUE); vals <- vals[vals >= 2]
   if (length(vals) < 3) return(list(thresholds = rep(NA, 3), sizes = rep(NA, 3), obj = NA))
   best <- NULL
@@ -127,19 +124,19 @@ sizes_at <- function(cnt, th) vapply(th, function(t) sum(cnt >= t), integer(1))
 
 s45 <- consensus_stats(included_ids)
 st45 <- s45$stats
-add_check("reproduction", "n_lists, n_distinct_lists, n_families_any, n_families_all, n_family_roots recomputed from the matrix equal the delivered columns", "",
+add_check("reproduction", "n_lists, n_distinct_lists, n_families_any, n_families_all, n_family_roots recomputed from the matrix equal the original columns", "",
           all(st45$n_lists == master$n_lists) && all(st45$n_distinct_lists == master$n_distinct_lists) && all(st45$n_families_any == master$n_families_any) &&
           all(st45$n_families_all == master$n_families_all) && all(st45$n_family_roots == master$n_family_roots))
-add_check("reproduction", "families_any and families_all strings recomputed equal the delivered columns", "", all(st45$families_any == master$families_any) && all(st45$families_all == master$families_all))
+add_check("reproduction", "families_any and families_all strings recomputed equal the original columns", "", all(st45$families_any == master$families_any) && all(st45$families_all == master$families_all))
 add_check("reproduction", "30 distinct sets among the 45 lists (7 identical-set groups)", length(s45$rep_ids), length(s45$rep_ids) == 30 && nrow(duplicate_groups) == 7)
 tp45 <- choose_tiers(master$n_lists); tf45 <- choose_tiers(master$n_families_any)
 add_check("reproduction", "primary tier thresholds 29/20/7 and sizes 155/310/627 reproduced", paste(paste(tp45$thresholds, collapse = "/"), paste(tp45$sizes, collapse = "/")),
           identical(as.integer(tp45$thresholds), c(29L, 20L, 7L)) && identical(as.integer(tp45$sizes), c(155L, 310L, 627L)))
 add_check("reproduction", "family-aware tier thresholds 9/6/3 and sizes 127/253/454 reproduced", paste(paste(tf45$thresholds, collapse = "/"), paste(tf45$sizes, collapse = "/")),
           identical(as.integer(tf45$thresholds), c(9L, 6L, 3L)) && identical(as.integer(tf45$sizes), c(127L, 253L, 454L)))
-add_check("reproduction", "tier assignments recomputed equal the delivered tier_primary and tier_family columns", "",
+add_check("reproduction", "tier assignments recomputed equal the saved tier_primary and tier_family columns", "",
           identical(tier_of(master$n_lists, tp45$thresholds), master$tier_primary) && identical(tier_of(master$n_families_any, tf45$thresholds), master$tier_family))
-add_check("reproduction", "delivered tier_summary.csv carries the same thresholds and sizes", "",
+add_check("reproduction", "saved tier_summary.csv carries the same thresholds and sizes", "",
           all(tier_summary_src$threshold == c(tp45$thresholds, tf45$thresholds)) && all(tier_summary_src$cumulative_size == c(tp45$sizes, tf45$sizes)))
 add_check("reproduction", "master rank equals the row order n_lists descending then entry ascending (C locale)", "", identical(master$rank, seq_len(nrow(master))) && !is.unsorted(order(-master$n_lists, master$entry, method = "radix")))
 
@@ -153,16 +150,11 @@ n_firm_lists <- as.integer(rowSums(Mx[, firm_ids, drop = FALSE])); n_prov_lists 
 provisional_lists_containing <- apply(Mx[, provisional_ids, drop = FALSE], 1, function(r) paste(provisional_ids[r == 1L], collapse = " "))
 
 # ---- Lineage register (hand-maintained interpretation; every measured fact is recomputed below) ----
-# INPUT : the documented_parent / evidence fields of provenance_table.csv, read list by list.
-# DOES  : records, for every included list, the immediate parent list proposed by the delivered family
-#         assignment, and the BASIS of that single link:
-#           root          - no parent claimed (family root);
-#           documented    - a source statement names the parent (file header, package help, README, Javadoc);
-#           exact_identity- no source statement; the normalised sets are identical;
-#           near_identity - no source statement; Jaccard >= 0.90 with the parent;
-#           similarity    - no source statement; Jaccard < 0.90 with the parent (containment or overlap only).
-#         documentation_strength qualifies documented links: explicit statement / name only / via an
-#         intermediate that was not acquired. The chain to the family root is then followed mechanically.
+# Built from the documented_parent and evidence fields of provenance_table.csv. For each included list:
+# its immediate parent under the family assignment and the basis of that link, one of
+#   root (no parent), documented (a source names the parent), exact_identity (identical sets),
+#   near_identity (Jaccard >= 0.90), similarity (Jaccard < 0.90).
+# documentation_strength grades documented links (explicit / name only / via an unacquired intermediate).
 lineage <- tribble(
   ~list_id, ~immediate_parent, ~link_basis, ~documentation_strength, ~link_evidence, ~unresolved_issues,
   "snowball_original", "none", "root", "n/a", "stop.txt header: 'An English stop word list ...'; no parent claimed", "pinned to a 2025 website commit; the list's own date is not stated in the file",
@@ -231,9 +223,9 @@ chain_info <- bind_rows(lapply(included_ids, function(id) {
   tibble(list_id = id, chain_root = root, chain_depth = length(ci$bases), chain_to_root = chain_str, weakest_link_basis = weakest, undocumented_links = undocumented,
          assignment_support = support, human_judgment_level = judgment, requires_human_judgment = judgment != "none")
 }))
-add_check("lineage", "every lineage chain ends at the root list of the list's delivered family", "", all(chain_info$chain_root == root_ids[match(family_of[chain_info$list_id], family_of[root_ids])]))
+add_check("lineage", "every lineage chain ends at the root list of the list's assigned family", "", all(chain_info$chain_root == root_ids[match(family_of[chain_info$list_id], family_of[root_ids])]))
 
-# Measured relations to the immediate parent and to the family root (from the delivered matrix).
+# Measured relations to the immediate parent and to the family root (from the saved matrix).
 measured_links <- bind_rows(lapply(included_ids, function(id) {
   p <- lineage$immediate_parent[lineage$list_id == id]; root <- chain_info$chain_root[chain_info$list_id == id]
   rp <- if (p == "none") NULL else relation(id, p); rr <- if (id == root) NULL else relation(id, root)
@@ -272,7 +264,7 @@ included_list_audit <- tibble(list_id = included_ids) |>
          n_raw_entries, n_unique_entries, n_duplicates_within, n_word, n_apostrophe, n_numeric, n_punctuation_or_symbol, n_other_characters, n_hyphenated,
          exact_duplicate_status, exact_duplicate_group, n_identical_lists, near_duplicate_status, max_near_duplicate_jaccard,
          family, is_family_root, jaccard_to_parent, relationship_to_parent, jaccard_to_root, relationship_to_root, within_family_max_jaccard, most_similar_in_family,
-         outside_family_max_jaccard, most_similar_outside_family, outside_family, delivered_review_flag = review_flag,
+         outside_family_max_jaccard, most_similar_outside_family, outside_family, saved_review_flag = review_flag,
          family_assignment_basis, chain_to_root, weakest_link_basis, undocumented_links, assignment_support, human_judgment_level, requires_human_judgment, unresolved_issues, evidence)
 add_check("audit", "included-list audit has one row per included list", nrow(included_list_audit), nrow(included_list_audit) == 45 && !anyNA(included_list_audit$n_unique_entries))
 
@@ -284,7 +276,7 @@ family_lineage_audit <- included_list_audit |>
             jaccard_to_parent, relationship_to_parent, words_only_in_list_vs_parent = measured_links$words_only_in_list_vs_parent[match(list_id, measured_links$list_id)],
             words_only_in_parent = measured_links$words_only_in_parent[match(list_id, measured_links$list_id)],
             jaccard_to_root, relationship_to_root, within_family_max_jaccard, most_similar_in_family, outside_family_max_jaccard, most_similar_outside_family, outside_family,
-            chain_to_root, weakest_link_basis, undocumented_links, assignment_support, human_judgment_level, requires_human_judgment, delivered_review_flag, unresolved_issues) |>
+            chain_to_root, weakest_link_basis, undocumented_links, assignment_support, human_judgment_level, requires_human_judgment, saved_review_flag, unresolved_issues) |>
   arrange(family, desc(is_family_root), chain_to_root, list_id)
 family_lineage_summary <- family_lineage_audit |> group_by(family, family_root) |>
   summarise(n_members = n(), n_firm = sum(status == "firm"), n_provisional = sum(status == "provisional"), members = paste(list_id, collapse = " "),
@@ -295,7 +287,7 @@ family_lineage_summary <- family_lineage_audit |> group_by(family, family_root) 
             min_jaccard_to_root = suppressWarnings(min(jaccard_to_root, na.rm = TRUE)), min_within_family_max_jaccard = suppressWarnings(min(within_family_max_jaccard, na.rm = TRUE)),
             max_outside_family_jaccard = max(outside_family_max_jaccard), .groups = "drop") |>
   mutate(across(c(min_jaccard_to_root, min_within_family_max_jaccard), ~ ifelse(is.finite(.x), .x, NA_real_))) |>
-  left_join(family_definitions |> select(family, delivered_documented_parent_of_root = documented_parent, delivered_min_within_family_jaccard = min_within_family_jaccard, delivered_n_review_flags = n_review_flags), by = "family") |>
+  left_join(family_definitions |> select(family, saved_documented_parent_of_root = documented_parent, saved_min_within_family_jaccard = min_within_family_jaccard, saved_n_review_flags = n_review_flags), by = "family") |>
   arrange(desc(n_members), family)
 # Pairwise values relevant to the non-documented assignments and to the flagged singleton families.
 pair_register <- tribble(
@@ -349,9 +341,9 @@ n_dup_groups <- nrow(duplicate_groups)
 consensus_variable_definitions <- tribble(
   ~variable, ~unit_counted, ~exact_rule, ~source_code, ~copies_counted_separately, ~provisional_lists_contribute, ~used_for_tiers, ~notes,
   "n_lists", "included named list (45: 32 firm + 13 provisional)", "row sum of the 0/1 membership matrix over all 45 included lists; every list counts 1 whether or not it is an exact copy of another list", code_line("n_lists = as.integer(rowSums(Mx))"), "yes", "yes", "primary tiers (thresholds 29 / 20 / 7)", sprintf("the 45 lists form %d identical-set groups (%d lists) plus %d singletons", n_dup_groups, sum(duplicate_groups$n_lists), 45 - sum(duplicate_groups$n_lists)),
-  "n_distinct_lists", "distinct normalised set (30)", "row sum over one representative list per identical-set group (the first list of the group in list order); a word in all six SMART copies counts 1", code_line("n_distinct_lists = as.integer(rowSums(Mx[, distinct_rep$list_id, drop = FALSE]))"), "no (identical sets collapsed; near-identical sets still count separately)", "yes", "no", "identical sets are detected by a hash of the sorted normalised entries (line 542); the representative choice does not affect the sum",
-  "n_families_any", "family (11)", "number of families with at least one member list containing the word", code_line("n_families_any = as.integer(rowSums(fam_any))"), "no (a family counts 1 however many members contain the word)", "yes (four families consist of one provisional list each: c99, cook, higgins, okapi_framework)", "family-aware tiers (thresholds 9 / 6 / 3)", "fam_any[, f] = rowSums(Mx[, members of f]) > 0 (line 548)",
-  "n_families_all", "family (11)", "number of families in which every member list contains the word", code_line("n_families_all = as.integer(rowSums(fam_all))"), "no", "yes (a provisional member missing the word removes its whole family from the count, e.g. dkpro for Snowball, yake for SMART)", "no", "fam_all[, f] = rowSums(Mx[, members of f]) == number of members of f (line 549); singleton families give n_families_all = n_families_any",
+  "n_distinct_lists", "distinct normalised set (30)", "row sum over one representative list per identical-set group (the first list of the group in list order); a word in all six SMART copies counts 1", code_line("n_distinct_lists = as.integer(rowSums(Mx[, distinct_rep$list_id, drop = FALSE]))"), "no (identical sets collapsed; near-identical sets still count separately)", "yes", "no", "identical sets are detected by a hash of the sorted normalised entries (line 532); the representative choice does not affect the sum",
+  "n_families_any", "family (11)", "number of families with at least one member list containing the word", code_line("n_families_any = as.integer(rowSums(fam_any))"), "no (a family counts 1 however many members contain the word)", "yes (four families consist of one provisional list each: c99, cook, higgins, okapi_framework)", "family-aware tiers (thresholds 9 / 6 / 3)", "fam_any[, f] = rowSums(Mx[, members of f]) > 0 (line 538)",
+  "n_families_all", "family (11)", "number of families in which every member list contains the word", code_line("n_families_all = as.integer(rowSums(fam_all))"), "no", "yes (a provisional member missing the word removes its whole family from the count, e.g. dkpro for Snowball, yake for SMART)", "no", "fam_all[, f] = rowSums(Mx[, members of f]) == number of members of f (line 539); singleton families give n_families_all = n_families_any",
   "n_family_roots", "root list (11)", "row sum over the 11 family root lists only", code_line("n_family_roots = as.integer(rowSums(Mx[, root_ids, drop = FALSE]))"), "no (copies ignored entirely)", "yes (four roots are provisional lists: choi_c99, cook_1988, qdap_function_words, okapi_framework)", "no", "roots: snowball_original, smart_lextek, glasgow, fox_1989, gate_kea, corenlp_patterns, lingpipe, choi_c99, cook_1988, qdap_function_words, okapi_framework"
 )
 ws <- master |> select(rank, entry, entry_class, n_lists, n_distinct_lists, n_families_any, n_families_all, n_family_roots, tier_primary, tier_family, families_any, families_all) |>
@@ -387,7 +379,7 @@ consensus_variable_examples_long <- bind_rows(lapply(consensus_variable_examples
 })) |> group_by(entry, family) |> mutate(family_members_containing = n(), family_fully_covered = family_members_containing == family_size) |> ungroup()
 provisional_contribution <- tribble(
   ~measure, ~provisional_lists_included, ~how,
-  "n_lists", TRUE, "all 45 included lists enter the matrix (included_ids = inclusion_status in included, included_provisional; line 533)",
+  "n_lists", TRUE, "all 45 included lists enter the matrix (included_ids = inclusion_status in included, included_provisional; line 523)",
   "n_distinct_lists", TRUE, "the identical-set groups are formed over all 45 lists; provisional copies collapse into their groups (python_stop_words_2014 with Snowball; lsa with ONIX; tidytext_onix with qdap_onix)",
   "n_families_any", TRUE, "families are defined over all 45 lists; c99, cook, higgins and okapi_framework exist only because of provisional lists",
   "n_families_all", TRUE, "a provisional member that lacks a word removes its family from the count",
@@ -402,7 +394,7 @@ s32 <- consensus_stats(firm_ids); st32 <- s32$stats
 tp32 <- choose_tiers(st32$n_lists); tf32 <- choose_tiers(st32$n_families_any)
 n_words <- nrow(master)
 # Size-matched tiers: thresholds cut only at count values, chosen so that each cumulative size is closest to the
-# delivered size (155/310/627 or 127/253/454). This isolates re-ordering from the shrinkage of the re-derived tiers.
+# original size (155/310/627 or 127/253/454). This isolates re-ordering from the shrinkage of the re-derived tiers.
 size_matched_thresholds <- function(cnt, target_sizes) {
   vals <- sort(unique(cnt[cnt >= 2]), decreasing = TRUE); th <- integer(0)
   for (S in target_sizes) { cand <- vals[if (length(th)) vals < th[length(th)] else TRUE]; if (!length(cand)) return(rep(NA_integer_, 3)); cum <- vapply(cand, function(t) sum(cnt >= t), integer(1)); th <- c(th, cand[which.min(abs(cum - S))]) }
@@ -433,8 +425,8 @@ firm_vs_provisional_words <- cmp |> select(entry, entry_class, n_lists_45, n_lis
 firm_vs_provisional_changes <- firm_vs_provisional_words |> filter(material_change) |> arrange(desc(provisional_only), desc(tier_primary_changed_size | tier_family_changed_size), desc(abs(rank_pct_change)), rank_45)
 tier_sizes_tbl <- function(th, sizes, obj, ordering, label, note) tibble(calculation = label, ordering = ordering, tier = 1:3, threshold = th, cumulative_size = sizes, size_ratio_to_tier1 = round(sizes / sizes[1], 3), objective = round(obj, 5), note = note)
 firm_vs_provisional_tier_sizes <- bind_rows(
-  tier_sizes_tbl(tp45$thresholds, tp45$sizes, tp45$obj, "primary (n_lists)", "45 lists (delivered)", "delivered thresholds"),
-  tier_sizes_tbl(tf45$thresholds, tf45$sizes, tf45$obj, "family-aware (n_families_any)", "45 lists (delivered)", "delivered thresholds"),
+  tier_sizes_tbl(tp45$thresholds, tp45$sizes, tp45$obj, "primary (n_lists)", "45 lists (original)", "original thresholds"),
+  tier_sizes_tbl(tf45$thresholds, tf45$sizes, tf45$obj, "family-aware (n_families_any)", "45 lists (original)", "original thresholds"),
   tier_sizes_tbl(tp32$thresholds, tp32$sizes, tp32$obj, "primary (n_lists)", "32 firm lists, re-derived thresholds", "same construction logic re-run on the 32-list counts"),
   tier_sizes_tbl(tf32$thresholds, tf32$sizes, tf32$obj, "family-aware (n_families_any)", "32 firm lists, re-derived thresholds", "same construction logic re-run on the 7 remaining families"),
   tier_sizes_tbl(tp32_size, sizes_at(st32$n_lists, tp32_size), tier_obj(sizes_at(st32$n_lists, tp32_size)), "primary (n_lists)", "32 firm lists, size-matched thresholds", "cut at the count values whose cumulative sizes are closest to 155 / 310 / 627"),
@@ -460,9 +452,9 @@ firm_vs_provisional_summary <- tribble(
   "Spearman correlation of n_families_any (45 vs 32)", "", sprintf("%.4f (surviving entries)", rho_fam), "",
   "primary tiers, re-derived thresholds (cumulative 1 / 2 / 3)", paste(tp45$sizes, collapse = " / "), paste(tp32$sizes, collapse = " / "), sprintf("n_lists >= %s versus n_lists >= %s: the same construction logic on 32 lists gives much smaller tiers (fewer count values, same 1:2:4 objective)", paste(tp45$thresholds, collapse = " / "), paste(tp32$thresholds, collapse = " / ")),
   "family-aware tiers, re-derived thresholds (cumulative 1 / 2 / 3)", paste(tf45$sizes, collapse = " / "), paste(tf32$sizes, collapse = " / "), sprintf("n_families_any >= %s versus >= %s over %d families", paste(tf45$thresholds, collapse = " / "), paste(tf32$thresholds, collapse = " / "), length(s32$families)),
-  "primary tiers, size-matched thresholds (cumulative 1 / 2 / 3)", paste(tp45$sizes, collapse = " / "), paste(sizes_at(st32$n_lists, tp32_size), collapse = " / "), sprintf("n_lists >= %s on the 32-list counts, cut at the count values closest to the delivered sizes", paste(tp32_size, collapse = " / ")),
+  "primary tiers, size-matched thresholds (cumulative 1 / 2 / 3)", paste(tp45$sizes, collapse = " / "), paste(sizes_at(st32$n_lists, tp32_size), collapse = " / "), sprintf("n_lists >= %s on the 32-list counts, cut at the count values closest to the original sizes", paste(tp32_size, collapse = " / ")),
   "family-aware tiers, size-matched thresholds (cumulative 1 / 2 / 3)", paste(tf45$sizes, collapse = " / "), paste(sizes_at(st32$n_families_any, tf32_size), collapse = " / "), sprintf("n_families_any >= %s on the 32-list counts", paste(tf32_size, collapse = " / ")),
-  "entries whose primary tier changes (size-matched cut)", "", as.character(sum(cmp$tier_primary_changed_size)), "membership in tiers of about the delivered size, so this counts re-ordering rather than shrinkage",
+  "entries whose primary tier changes (size-matched cut)", "", as.character(sum(cmp$tier_primary_changed_size)), "membership in tiers of about the original size, so this counts re-ordering rather than shrinkage",
   "entries whose family-aware tier changes (size-matched cut)", "", as.character(sum(cmp$tier_family_changed_size)), "",
   "entries whose primary tier changes (re-derived thresholds)", "", as.character(sum(cmp$tier_primary_changed_logic)), "dominated by the smaller tiers; see firm_vs_provisional_tier_transitions.csv",
   "entries whose family-aware tier changes (re-derived thresholds)", "", as.character(sum(cmp$tier_family_changed_logic)), "",
@@ -531,7 +523,7 @@ add_check("tiers", "family-aware tier 3 target 4 x 127 = 508 lies between the cu
 # ---- 6. Version and normalisation audit ----
 log_line("version and normalisation audit")
 # Raw entries as found (lists/*.txt, entries in file order, original case, duplicates kept) and the normalisation
-# of the source script (lines 407-416) re-applied here, for all 70 registered sources.
+# of the source script (lines 397-406) re-applied here, for all 70 registered sources.
 normalise_entries <- function(e0) {
   e1 <- stri_trans_nfc(e0); e2 <- stri_replace_all_regex(e1, "[\\u2018\\u2019\\u02BC\\u2032]", "'"); e3 <- stri_trim_both(e2)
   e4 <- stri_replace_all_regex(e3, "\\s+", " "); e5 <- stri_trans_tolower(e4); e5 <- e5[e5 != ""]; unique(e5)
@@ -627,28 +619,28 @@ add_check("versions", "the four acquired NLTK-labelled lists are strictly nested
 spark_in_chain <- any(vapply(nltk_ids, function(id) setequal(norm_lists$spark_ml, norm_lists[[id]]), logical(1)))
 add_check("versions", "Spark's list equals none of the four acquired NLTK snapshots and equals the 175-entry Snowball variant plus 6 entries", collapse_words(setdiff(norm_lists$spark_ml, norm_lists$stopwords_pkg_snowball)),
           !spark_in_chain && all(norm_lists$stopwords_pkg_snowball %in% norm_lists$spark_ml) && length(setdiff(norm_lists$spark_ml, norm_lists$stopwords_pkg_snowball)) == 6)
-# Normalisation rules as implemented (source script lines 401-431) with their measured effect on the included lists.
+# Normalisation rules as implemented (source script lines 392-421) with their measured effect on the included lists.
 norm_inc <- norm_log |> filter(list_id %in% included_ids)
 class_counts <- master |> count(entry_class) |> arrange(desc(n))
 normalisation_rules <- tribble(
   ~step, ~rule_as_implemented, ~source_code, ~effect_on_included_lists, ~what_is_not_done,
-  "raw preservation", "every upstream file is stored byte-exact under raw/ (download mode wb; package files copied); every extracted list is written to lists/<list_id>.txt in file order with original case and duplicates", "lines 240-253 (download), 276-297 (package exports), 399 (lists/)", sprintf("%d raw files hashed in acquisition_log.csv; %d list files", nrow(acq_log), length(raw_lists)), "no character is altered before normalisation",
-  "parsing", "comment lines and code syntax removed by an explicit parser per source (Snowball '|' comments; '#' + text comments where declared; Python, Java, C and HTML wrappers stripped); a line holding only '#' is an entry", "lines 310-388", "entries such as '#', '\\?' (TAPoRware), '-lrb-' (CoreNLP) and '\"the' (DL4J) survive parsing as entries", "no token is split, joined or filtered on character class",
-  "NFC", "Unicode canonical composition", "line 409", sprintf("%d included-list entries changed by NFC", sum(stri_detect_fixed(norm_inc$changes, "nfc"))), "",
-  "apostrophes", "U+2018, U+2019, U+02BC and U+2032 replaced by the ASCII apostrophe U+0027; the apostrophe itself is never removed", "line 410", sprintf("%d entries changed (all in spacy, whose runtime set adds curly variants of its contraction tokens); after the change they collapse onto the ASCII forms", sum(stri_detect_fixed(norm_inc$changes, "apostrophe"))), "contractions are not expanded or stripped: don't (Snowball), dont (qdap, CoreNLP) and don (NLTK, gensim) stay three distinct entries",
-  "trim and whitespace", "leading and trailing whitespace removed; internal runs of whitespace collapsed to one space", "lines 411-412", sprintf("%d entries trimmed (dl4j 'ours ', corenlp 'ours ')", sum(stri_detect_fixed(norm_inc$changes, "trim"))), "",
-  "case", "lower case", "line 413", sprintf("%d entries lower-cased (dl4j '\"The', cook 'I', qdap function words I'd I'll I'm I've)", sum(stri_detect_fixed(norm_inc$changes, "case"))), "",
-  "empty entries", "entries that become empty are dropped", "line 416", sprintf("%d dropped as empty", sum(norm_inc$dropped == "empty")), "",
-  "within-list duplicates", "the first occurrence is kept, later identical normalised entries in the same list are dropped and logged", "line 416", sprintf("%d within-list duplicates collapsed (e.g. SMART's second 'would', ONIX's 6 repeats, spacy's 15 apostrophe variants and repeated 'very')", sum(norm_inc$dropped == "duplicate_within_list")), "",
-  "non-word entries", "numbers, punctuation, regex-escaped tokens and malformed tokens stay as distinct entries and are classified in entry_class", "lines 419-427", paste(sprintf("%s %d", class_counts$entry_class, class_counts$n), collapse = "; "), "they are not removed from the union; they inflate n_lists = 1 rows only (they come from taporware, voyant_en, corenlp_patterns, dl4j)",
-  "comparison", "set operations (Jaccard, duplicates, consensus counts) use the normalised unique entries; nothing else is folded", "lines 537-560, 592", "identity is normalised-set identity: Bow = MALLET = lexicon_mallet although the raw sequences differ (see raw_vs_normalised_equality.csv)", "no stemming, no apostrophe stripping, no removal of single letters or numbers"
+  "raw preservation", "every upstream file is stored byte-exact under raw/ (download mode wb; package files copied); every extracted list is written to lists/<list_id>.txt in file order with original case and duplicates", "lines 231-244 (download), 276-297 (package exports), 399 (lists/)", sprintf("%d raw files hashed in acquisition_log.csv; %d list files", nrow(acq_log), length(raw_lists)), "no character is altered before normalisation",
+  "parsing", "comment lines and code syntax removed by an explicit parser per source (Snowball '|' comments; '#' + text comments where declared; Python, Java, C and HTML wrappers stripped); a line holding only '#' is an entry", "lines 301-379", "entries such as '#', '\\?' (TAPoRware), '-lrb-' (CoreNLP) and '\"the' (DL4J) survive parsing as entries", "no token is split, joined or filtered on character class",
+  "NFC", "Unicode canonical composition", "line 399", sprintf("%d included-list entries changed by NFC", sum(stri_detect_fixed(norm_inc$changes, "nfc"))), "",
+  "apostrophes", "U+2018, U+2019, U+02BC and U+2032 replaced by the ASCII apostrophe U+0027; the apostrophe itself is never removed", "line 400", sprintf("%d entries changed (all in spacy, whose runtime set adds curly variants of its contraction tokens); after the change they collapse onto the ASCII forms", sum(stri_detect_fixed(norm_inc$changes, "apostrophe"))), "contractions are not expanded or stripped: don't (Snowball), dont (qdap, CoreNLP) and don (NLTK, gensim) stay three distinct entries",
+  "trim and whitespace", "leading and trailing whitespace removed; internal runs of whitespace collapsed to one space", "lines 401-402", sprintf("%d entries trimmed (dl4j 'ours ', corenlp 'ours ')", sum(stri_detect_fixed(norm_inc$changes, "trim"))), "",
+  "case", "lower case", "line 403", sprintf("%d entries lower-cased (dl4j '\"The', cook 'I', qdap function words I'd I'll I'm I've)", sum(stri_detect_fixed(norm_inc$changes, "case"))), "",
+  "empty entries", "entries that become empty are dropped", "line 406", sprintf("%d dropped as empty", sum(norm_inc$dropped == "empty")), "",
+  "within-list duplicates", "the first occurrence is kept, later identical normalised entries in the same list are dropped and logged", "line 406", sprintf("%d within-list duplicates collapsed (e.g. SMART's second 'would', ONIX's 6 repeats, spacy's 15 apostrophe variants and repeated 'very')", sum(norm_inc$dropped == "duplicate_within_list")), "",
+  "non-word entries", "numbers, punctuation, regex-escaped tokens and malformed tokens stay as distinct entries and are classified in entry_class", "lines 409-417", paste(sprintf("%s %d", class_counts$entry_class, class_counts$n), collapse = "; "), "they are not removed from the union; they inflate n_lists = 1 rows only (they come from taporware, voyant_en, corenlp_patterns, dl4j)",
+  "comparison", "set operations (Jaccard, duplicates, consensus counts) use the normalised unique entries; nothing else is folded", "lines 527-550, 582", "identity is normalised-set identity: Bow = MALLET = lexicon_mallet although the raw sequences differ (see raw_vs_normalised_equality.csv)", "no stemming, no apostrophe stripping, no removal of single letters or numbers"
 )
 # Registered sources, excluded candidates and manifests: how 70, 26 and 109 relate.
 kind_counts <- list_summary |> count(kind) |> arrange(kind)
 n_manifests <- c(tables = length(list.files(src_tab, pattern = "[.]manifest[.]yml$")), figures = length(list.files(file.path(src_dir, "figures"), pattern = "[.]manifest[.]yml$")), lists = length(list.files(src_lists, pattern = "[.]manifest[.]yml$")))
 source_accounting <- tribble(
   ~count, ~value, ~composition, ~where_measured,
-  "registered sources", nrow(list_summary), paste(sprintf("%s %d", kind_counts$kind, kind_counts$n), collapse = "; "), "list_summary.csv rows (one per registry entry of english_stopword_lists.R lines 56-128)",
+  "registered sources", nrow(list_summary), paste(sprintf("%s %d", kind_counts$kind, kind_counts$n), collapse = "; "), "list_summary.csv rows (one per registry entry of english_stopword_lists.R lines 49-121)",
   "named lists in the comparison", length(included_ids), sprintf("%d included (firm) + %d included_provisional", length(firm_ids), length(provisional_ids)), "provenance_table.csv inclusion_status",
   "provenance rows", nrow(provenance), "45 named + 3 aggregate conditions + 1 acquired-but-excluded (jockers); secondary copies have no provenance row", "provenance_table.csv",
   "raw files in the acquisition log", nrow(acq_log), sprintf("%d non-secondary files (49 sources + 6 archive members + 1 tidytext export) + %d secondary copies", sum(!grepl("^secondary/", acq_log$file)), sum(grepl("^secondary/", acq_log$file))), "acquisition_log.csv",
@@ -664,7 +656,7 @@ version_normalisation_audit <- tribble(
   "NLTK 127 versus 198", "Does the 127-versus-198 difference reflect a documented historical version change, different embedded snapshots across tools, or something else?",
     sprintf("The four acquired NLTK-labelled lists are %s nested: DKPro %d < igorbrigadir copy %d < stopwords package %d < current NLTK %d. Each step only adds entries: +%d bare contraction fragments (%s), +%d apostrophe forms, +%d pronoun contractions. Spark's 181-entry list matches none of them (it equals the 175-entry Snowball variant plus can don just now s t).", ifelse(nltk_nested, "strictly", "not"), nltk_snapshots$n_entries[1], nltk_snapshots$n_entries[2], nltk_snapshots$n_entries[3], nltk_snapshots$n_entries[4], nltk_snapshots$n_added_vs_previous[2], nltk_snapshots$words_added_vs_previous[2], nltk_snapshots$n_added_vs_previous[3], nltk_snapshots$n_added_vs_previous[4]),
     "NLTK corpus README (raw/nltk_stopwords_README.txt): lists 'obtained from' the PostgreSQL snowball stopwords directory; 'The English list has been augmented https://github.com/nltk/nltk_data/issues/22'. DKPro README (quoted in provenance_table.csv, file not preserved): 'Files copied from NLTK.' The stopwords package help cites nltk_data stopwords.zip without a date.",
-    "Consistent with successive states of one nltk_data file embedded by different tools at different times: the nesting is measured, and one augmentation is documented (issue 22). What the evidence does not establish: the nltk_data commit or date of the 153- and 179-entry states (the igorbrigadir commit dates the copy, not the NLTK state; the stopwords package states no snapshot date), whether DKPro's 127 equals PostgreSQL's english.stop (not acquired), and where Spark's 181-entry content comes from. The '2015' date attached to the 153-entry copy in the delivered README is not supported by any acquired file.",
+    "Consistent with successive states of one nltk_data file embedded by different tools at different times: the nesting is measured, and one augmentation is documented (issue 22). What the evidence does not establish: the nltk_data commit or date of the 153- and 179-entry states (the igorbrigadir commit dates the copy, not the NLTK state; the stopwords package states no snapshot date), whether DKPro's 127 equals PostgreSQL's english.stop (not acquired), and where Spark's 181-entry content comes from. The '2015' date attached to the 153-entry copy in the earlier README is not supported by any acquired file.",
     "partly resolved: nesting measured and one change documented; intermediate dates, the PostgreSQL ancestor and the Spark snapshot unresolved",
   "Bow / MALLET / SMART", "Is the reported equality raw equality or equality after normalisation?",
     sprintf("Bow vs MALLET: raw sequences identical = %s (both %d raw entries with 'would' twice), normalised sets identical = %s. Bow vs lexicon sw_mallet: raw sequences identical = %s (%d vs %d raw entries: the package export has no duplicate), normalised sets identical = %s. Bow vs SMART: not equal at any level (Jaccard %.4f); after dropping SMART's apostrophe entries the sets are %s (%d / %d entries differ).", bm$raw_sequence_identical, bm$n_raw_entries_a, bm$normalised_set_identical, bl$raw_sequence_identical, bl$n_raw_entries_a, bl$n_raw_entries_b, bl$normalised_set_identical, bw$jaccard_normalised, ifelse(bw$identical_after_extra_normalisation, "identical", "not identical"), bw$n_only_in_a_after_extra, bw$n_only_in_b_after_extra),
@@ -674,7 +666,7 @@ version_normalisation_audit <- tribble(
   "qdap Buckley-Salton", "Is BuckleySaltonSWL a reduced SMART list (help: 571 to 546) or a re-formatted one?",
     sprintf("Raw: %d entries (%d unique) vs SMART %d (%d unique); normalised Jaccard to SMART %.4f, to Bow %.4f. After stripping apostrophes inside SMART's entries the sets are %s: %d entries only in Buckley-Salton (%s), %d only in stripped SMART (%s).", list_summary$n_raw_entries[list_summary$list_id == "buckley_salton_qdap"], list_summary$n_unique_entries[list_summary$list_id == "buckley_salton_qdap"], list_summary$n_raw_entries[list_summary$list_id == "smart_lextek"], list_summary$n_unique_entries[list_summary$list_id == "smart_lextek"], bs$jaccard_normalised, eq("buckley_salton_qdap", "bow_rainbow")$jaccard_normalised, ifelse(bs$identical_after_extra_normalisation, "identical", "not identical"), bs$n_only_in_a_after_extra, bs$words_only_in_a_after_extra, bs$n_only_in_b_after_extra, bs$words_only_in_b_after_extra),
     "qdapDictionaries help: quotes the Onix page attribution and notes 'Reduced from the original 571 words to 546'.",
-    "The difference from SMART is formatting (apostrophes removed inside contractions, which also merges some forms into existing words) plus the removal of the single letters listed; it is not a curated word-level reduction. The delivered comparison keeps it as a distinct set (Jaccard 0.8863 to Bow) because the normalisation never strips apostrophes.",
+    "The difference from SMART is formatting (apostrophes removed inside contractions, which also merges some forms into existing words) plus the removal of the single letters listed; it is not a curated word-level reduction. The original comparison keeps it as a distinct set (Jaccard 0.8863 to Bow) because the normalisation never strips apostrophes.",
     "resolved",
   "SMART six copies and Snowball five copies", "Are the exact-duplicate groups identical as raw files or only as normalised sets?",
     sprintf("SMART: raw sequences identical to the lextek page for %d of %d copies (%s); the 2011 snapshot of the page is %s in raw sequence. Snowball: raw sequences identical to stop.txt for %d of %d copies (%s). Raw file hashes are never equal across copies because the files differ in format (HTML page, .dat, package export).", sum(sm6$raw_sequence_identical), nrow(sm6), paste(sprintf("%s=%s", sm6$list_b, sm6$raw_sequence_identical), collapse = ", "), ifelse(eq("smart_lextek", "sec_smart_lextek_2011")$raw_sequence_identical, "identical", "not identical"), sum(sn5$raw_sequence_identical), nrow(sn5), paste(sprintf("%s=%s", sn5$list_b, sn5$raw_sequence_identical), collapse = ", ")),
@@ -684,11 +676,11 @@ version_normalisation_audit <- tribble(
   "Other reported near-equalities", "Which reported relations hold at which level?",
     sprintf("Weka = Bow + ll ve; YAKE = SMART + dr dra mr ms; ONIX = Fox - numbered numbering; tidytext onix = ONIX - b..z so; stopwords snowball = Snowball + will; scikit-learn = Glasgow - computer fify + fifty; Voyant = TAPoRware + thee thou thy: all are normalised-set relations verified in raw_vs_normalised_equality.csv (none is a raw-file identity). TAPoRware vs Glasgow after dropping non-word entries: %s (%d / %d differ). gensim vs spaCy after dropping apostrophe entries: %s (%d / %d differ). CoreNLP vs Snowball after stripping apostrophes and dropping non-word entries: %d / %d differ. DKPro vs Snowball after dropping apostrophe entries: %d / %d differ.", ifelse(tg$identical_after_extra_normalisation, "identical", "not identical"), tg$n_only_in_a_after_extra, tg$n_only_in_b_after_extra, ifelse(gs$identical_after_extra_normalisation, "identical", "not identical"), gs$n_only_in_a_after_extra, gs$n_only_in_b_after_extra, cs$n_only_in_a_after_extra, cs$n_only_in_b_after_extra, dk$n_only_in_a_after_extra, dk$n_only_in_b_after_extra),
     "Weka (Javadoc: based on Rainbow), scikit-learn (header: Glasgow), Voyant (header: TAPoRware), tidytext onix (help: lextek), qdap onix (help: reduced from 429 to 404) are documented; YAKE, ONIX-to-Fox and the stopwords-package 'will' are not.",
-    "Reported equalities in the delivered README are normalised-set statements; the word 'identical' there always means identical normalised sets.",
+    "Reported equalities in the earlier README are normalised-set statements; the word 'identical' there always means identical normalised sets.",
     "resolved",
   "Apostrophes and non-word entries", "How were they treated in raw preservation versus comparison?",
     sprintf("Raw files and lists/ keep every character. Normalisation maps four curly apostrophe code points to U+0027 (%d entries, all spacy) and never removes an apostrophe. Entry classes in the union: %s. Contractions therefore exist in up to three spellings (don't / dont / don) that never merge.", sum(stri_detect_fixed(norm_inc$changes, "apostrophe")), paste(sprintf("%s %d", class_counts$entry_class, class_counts$n), collapse = ", ")),
-    "english_stopword_lists.R lines 401-431 and README 'Method notes'.",
+    "english_stopword_lists.R lines 392-421 and README 'Method notes'.",
     "Rules and counts are itemised in normalisation_rules.csv. Consequence for the consensus counts: apostrophe-free copies (Bow, MALLET, Weka, qdap Buckley-Salton, CoreNLP, DKPro, the 153-entry NLTK state) never vote for the apostrophe forms, and the apostrophe-carrying lists never vote for the bare forms.",
     "resolved",
   "70 sources, 26 candidates, 109 manifests", "How do the three headline counts relate?",
@@ -709,7 +701,7 @@ version_normalisation_audit <- tribble(
   "Unpinned sources", "Which included lists have no version pin?",
     "glasgow (live page), gate_kea (live source-browser page), okapi_framework (bitbucket master): retrieved at run time, SHA256 and retrieval time in acquisition_log.csv.",
     "provenance_table.csv version_date; acquisition_log.csv.",
-    "A later re-download could change these three lists; the delivered hashes define the compared content.",
+    "A later re-download could change these three lists; the saved hashes define the compared content.",
     "open by nature"
 )
 
@@ -742,7 +734,7 @@ save_table(source_accounting, "source_accounting")
 run_end <- Sys.time()
 git_commit <- tryCatch(system2("git", c("-C", shQuote(project_dir), "rev-parse", "--short", "HEAD"), stdout = TRUE, stderr = FALSE), error = function(e) "")
 checks_tbl <- bind_rows(checks)
-audit_run_info <- tibble(item = c("run_start_utc", "run_end_utc", "runtime_minutes", "git_commit_at_start", "r_version", "source_script", "source_script_sha256", "source_run_id", "n_included_lists", "n_firm_lists", "n_provisional_lists", "n_entries", "boundary_window", "large_rank_move_share", "delivered_checks_passing"),
+audit_run_info <- tibble(item = c("run_start_utc", "run_end_utc", "runtime_minutes", "git_commit_at_start", "r_version", "source_script", "source_script_sha256", "source_run_id", "n_included_lists", "n_firm_lists", "n_provisional_lists", "n_entries", "boundary_window", "large_rank_move_share", "saved_checks_passing"),
                         value = c(format(run_start, "%Y-%m-%dT%H:%M:%SZ", tz = "UTC"), format(run_end, "%Y-%m-%dT%H:%M:%SZ", tz = "UTC"), round(as.numeric(difftime(run_end, run_start, units = "mins")), 2), git_commit, R.version.string,
                                   source_script_path, sha256(source_script_path), paste(run_info_src$value[run_info_src$item == "run_end_utc"], run_info_src$value[run_info_src$item == "git_commit_at_start"]), length(included_ids), length(firm_ids), length(provisional_ids), nrow(master), boundary_window, large_rank_move_share,
                                   sprintf("%d of %d", sum(checks_src$pass), nrow(checks_src))))
@@ -755,7 +747,7 @@ input_files <- c(lapply(file.path(src_tab, paste0(input_tables, ".csv")), functi
                  lapply(list_files, function(f) list(path = f, hash = sha256(f), format = "other")),
                  list(list(path = source_script_path, hash = sha256(source_script_path), format = "r-script"), list(path = script_path, hash = sha256(script_path), format = "r-script")))
 manifest_parameters <- list(
-  purpose = "audit of the evidence structure behind the delivered stopword consensus rankings: lineage bases, consensus-variable reproduction, firm-versus-provisional influence, tier boundaries, version and normalisation questions; read-only over stopword_lists/; no family assignment changed, no keep/remove decision, no project list, no corpus access",
+  purpose = "audit of the evidence structure behind the existing stopword consensus rankings: lineage bases, consensus-variable reproduction, firm-versus-provisional influence, tier boundaries, version and normalisation questions; read-only over stopword_lists/; no family assignment changed, no keep/remove decision, no project list, no corpus access",
   included_lists = paste(included_ids, collapse = ", "), firm_lists = paste(firm_ids, collapse = ", "), provisional_lists = paste(provisional_ids, collapse = ", "),
   near_duplicate_jaccard = as.character(near_duplicate_jaccard), tier_ratio = paste(tier_ratio, collapse = ":"), family_review_jaccard = as.character(family_review_jaccard),
   boundary_window = as.character(boundary_window), large_rank_move_share = as.character(large_rank_move_share),
@@ -766,7 +758,7 @@ write_sidecar <- function(output) {
                    transformation = list(script = script_path, script_hash = sha256(script_path), parameters = manifest_parameters, git_commit = git_commit),
                    software = list(language = "R", language_version = paste(R.version$major, R.version$minor, sep = "."), packages = package_versions, os = paste(Sys.info()[["sysname"]], Sys.info()[["release"]])),
                    timestamp = format(Sys.time(), "%Y-%m-%dT%H:%M:%SZ", tz = "UTC"),
-                   notes = "Derived read-only from the delivered tables and extracted lists of r_analysis_outputs/stopword_lists/ (hashed above). Interpretation columns (lineage basis, assignment support, unresolved issues) come from the hand-maintained lineage register inside this script; every measured column is recomputed from the delivered membership matrix or the lists/ files.")
+                   notes = "Derived read-only from the existing tables and extracted lists of r_analysis_outputs/stopword_lists/ (hashed above). Interpretation columns (lineage basis, assignment support, unresolved issues) come from the hand-maintained lineage register inside this script; every measured column is recomputed from the saved membership matrix or the lists/ files.")
   write_yaml(manifest, paste0(output, ".manifest.yml"))
 }
 invisible(lapply(list.files(tab_dir, pattern = "[.]csv$", full.names = TRUE), write_sidecar))

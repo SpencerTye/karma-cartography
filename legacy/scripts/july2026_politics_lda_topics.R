@@ -1,24 +1,10 @@
-# July 2026 r/politics sample — Phase 1A: Latent Dirichlet Allocation topic models
-#
-# Standalone side analysis. Reads the raw Parquet comment and submission files
-# (read-only), builds one document per comment and per submission, applies an
-# explicit text-processing pipeline in which every step is counted, fits Latent
-# Dirichlet Allocation (collapsed Gibbs sampling, WarpLDA as implemented in
-# text2vec) at several candidate topic counts with three random seeds each,
-# compares the candidates with quantitative diagnostics, measures the stability
-# of the topic solutions across seeds, retains models by an explicit rule, and
-# writes the topic-word and document-topic distributions with source identifiers
-# and metadata preserved. Topics are identified only by number. All outputs go
-# under r_analysis_outputs/lda_topics/ and are reproducible by running this
-# script top to bottom.
+# Phase 1A LDA topic models for the July 2026 r/politics sample (comments and submissions).
+# Input: Parquet files under data_sample/. Fits WarpLDA (text2vec) at several K with three
+# seeds each, compares them, checks cross-seed stability and retains models by a fixed rule.
+# Output: tables, figures and manifests under r_analysis_outputs/lda_topics/.
+# Env: LDA_QUICK=<folder> runs a small smoke test there; LDA_FIT_CACHE=<dir> caches fits.
 
 # ---- Setup: packages, paths, parameters, output directories ----
-# INPUT : none.
-# DOES  : load packages; define source paths and every analytical parameter;
-#         create output folders. Setting LDA_QUICK=<folder> in the environment
-#         runs a reduced smoke test into that folder (never into the project
-#         outputs); the default run uses the parameters as written.
-# OUTPUT: parameter objects; figures/ and tables/ directories.
 suppressPackageStartupMessages({
   library(nanoparquet); library(dplyr); library(tidyr); library(stringi); library(Matrix)
   library(text2vec); library(stopwords); library(clue); library(parallel)
@@ -40,10 +26,10 @@ fig_dir <- file.path(out_dir, "figures")
 tab_dir <- file.path(out_dir, "tables")
 dir.create(fig_dir, recursive = TRUE, showWarnings = FALSE)
 dir.create(tab_dir, recursive = TRUE, showWarnings = FALSE)
-# Outputs are fully regenerated on every run; remove those of a previous run so no stale file survives.
+# Clear outputs from any previous run.
 invisible(file.remove(list.files(c(fig_dir, tab_dir), pattern = "\\.(csv|png|yml)$", full.names = TRUE)))
 
-# Analytical parameters. Every value is used below and recorded in the manifests.
+# Analysis parameters (all recorded in the manifests).
 candidate_k                <- c(10L, 20L, 30L, 40L, 50L, 60L, 80L, 100L)  # topic counts explored
 fit_seeds                  <- c(1L, 2L, 3L)   # one fit per seed and K; seed 1 is the primary fit
 alpha_sum                  <- 5               # document-topic prior alpha = alpha_sum / K (symmetric)
@@ -72,10 +58,7 @@ comment_files    <- list.files(comments_dir,    pattern = "\\.parquet$", full.na
 submission_files <- list.files(submissions_dir, pattern = "\\.parquet$", full.names = TRUE)
 
 # ---- Read source data ----
-# INPUT : 7 comment Parquet files + 1 submission Parquet file (read-only).
-# DOES  : read each file and stack; keep the columns used below (column
-#         selection only; no rows dropped); cast created_utc to double.
-# OUTPUT: comments (one row per comment); submissions (one row per submission).
+# 7 comment files and 1 submission file; keep only the columns used below.
 comments <- lapply(comment_files, read_parquet) |>
   bind_rows() |>
   select(id, link_id, parent_id, author, created_utc, subreddit, body) |>
@@ -91,15 +74,8 @@ n_submissions_all <- nrow(submissions)
 mark_stage("read")
 
 # ---- Document table ----
-# INPUT : comments; submissions.
-# DOES  : one document per source record. Comment text = body exactly as
-#         stored; submission text = title, one space, selftext exactly as
-#         stored. doc_key is the Reddit fullname ('t1_' + id for comments,
-#         't3_' + id for submissions) so the two id spaces cannot collide.
-#         submission_id is the thread: link_id without 't3_' for comments, the
-#         own id for submissions. parent_id is kept for comments (NA for
-#         submissions). Nothing is dropped.
-# OUTPUT: docs (one row per source record, source order: comments then submissions).
+# One document per record. Submission text is title + " " + selftext. doc_key is the
+# Reddit fullname ('t1_'/'t3_' + id); submission_id is the thread id.
 docs <- bind_rows(
   comments |>
     transmute(doc_type = "comment", doc_id = id, doc_key = paste0("t1_", id),
@@ -117,10 +93,7 @@ docs <- bind_rows(
 n_docs <- nrow(docs)
 
 # ---- Text-field availability ----
-# INPUT : comments (body, author); submissions (title, selftext, author).
-# DOES  : classify every value of each text field as missing, empty, one of the
-#         deletion/removal markers, or other text; count. Nothing is altered.
-# OUTPUT: text_availability (one row per field x state).
+# Count each text field's values as missing, empty, a deletion/removal marker, or text.
 text_state <- function(x) case_when(
   is.na(x)                     ~ "missing (NA)",
   x == ""                      ~ "empty string",
@@ -142,25 +115,10 @@ text_availability <- bind_rows(
 n_text_missing <- sum(is.na(comments$body)) + sum(is.na(submissions$title)) + sum(is.na(submissions$selftext))
 
 # ---- Text processing, step by step ----
-# INPUT : docs$text.
-# DOES  : the transformations that turn stored text into model terms, applied
-#         in this order and counted at every step:
-#         (1) case folding (Unicode lower case);
-#         (2) the curly apostrophe U+2019 becomes ';
-#         (3) URLs (http://, https://, www. up to the next whitespace) removed;
-#         (4) tokens = maximal runs of Unicode letters, optionally joined by
-#             internal apostrophes (don't, o'brien); digits, punctuation and
-#             symbols never form tokens;
-#         (5) a trailing possessive 's is stripped (trump's -> trump);
-#         (6) tokens shorter than min_token_chars are removed;
-#         (7) tokens in the SMART English stopword list are removed;
-#         (8) documents whose whole text is a removal marker ([deleted],
-#             [removed], [ Removed by Reddit ]) are excluded from modelling
-#             together with their tokens (they carry no authored text).
-#         No stemming or lemmatisation. Reference counts describe what the
-#         untaken alternatives would have done; they change nothing.
-# OUTPUT: tok / tdoc (candidate token stream with document index); per-document
-#         token counts on docs; the counts used by text_processing_report.
+# Steps, each counted: (1) lower case; (2) U+2019 -> '; (3) remove URLs;
+# (4) tokens = runs of letters, apostrophes allowed inside; (5) strip trailing 's;
+# (6) drop tokens shorter than min_token_chars; (7) drop SMART stopwords;
+# (8) exclude documents that are only a removal marker. No stemming.
 removal_markers  <- c("[deleted]", "[removed]", "[ Removed by Reddit ]")
 docs$marker_only <- stri_trim_both(docs$text) %in% removal_markers
 url_regex   <- "(https?://|www\\.)\\S+"
@@ -216,15 +174,9 @@ rm(in_marker_doc)
 mark_stage("tokenize")
 
 # ---- Vocabulary and document-term matrix ----
-# INPUT : tok / tdoc (candidate tokens of non-marker documents).
-# DOES  : vocabulary before pruning = distinct candidate terms (byte order);
-#         df(term) = non-marker documents containing the term. Terms are kept
-#         when min_document_frequency <= df <= max_document_share x non-marker
-#         documents. The document-term matrix has one row per source document
-#         (rows of excluded documents are empty), one column per kept term,
-#         cell = count of the term in the document. Documents with no kept
-#         term cannot be represented and are labelled, not dropped silently.
-# OUTPUT: vocabulary; dtm_all; vocabulary_table; docs$model_status.
+# Keep terms with min_document_frequency <= df <= max_document_share x documents.
+# The DTM has one row per source document; documents left with no terms are labelled
+# in model_status.
 vocab_all  <- sort(unique(tok), method = "radix")
 term_index <- match(tok, vocab_all)
 tf_all <- sparseMatrix(i = tdoc, j = term_index, x = 1,
@@ -264,16 +216,9 @@ status_levels <- c("modeled", "not modeled: removal marker only", "not modeled: 
                    "not modeled: only terms outside the vocabulary (document-frequency floor or ceiling)")
 
 # ---- Training / held-out split and document-completion halves ----
-# INPUT : dtm_all; docs$model_status; docs$n_tokens_modeled.
-# DOES  : modeled documents with at least 2 modeled tokens are eligible for the
-#         held-out set; floor(heldout_share x modeled documents) of them are
-#         sampled with split_seed. Models are fitted on the training documents
-#         only. For document-completion perplexity every held-out document's
-#         token occurrences are put in a seeded random order and alternated
-#         into half A (used to infer the document's topic mixture) and half B
-#         (scored), so both halves are non-empty.
-# OUTPUT: train_rows / heldout_rows; dtm_train; dtm_heldout; dtm_heldout_a;
-#         dtm_heldout_b; docs$split.
+# Hold out heldout_share of documents with 2+ tokens (split_seed). Each held-out
+# document's tokens are shuffled and alternated into half A (for inference) and
+# half B (scored) for document-completion perplexity.
 modeled_rows     <- which(docs$model_status == "modeled")
 n_modeled        <- length(modeled_rows)
 heldout_eligible <- modeled_rows[docs$n_tokens_modeled[modeled_rows] >= 2L]
@@ -309,24 +254,11 @@ rm(heldout_t, occ_doc, occ_term, occ_order, occ_rank, half_a)
 mark_stage("split")
 
 # ---- Model fitting (one worker process per fit) ----
-# INPUT : dtm_train; dtm_heldout_a / dtm_heldout_b; parameters.
-# DOES  : for every candidate K and seed: set.seed(seed); fit LDA with
-#         doc_topic_prior = alpha_sum / K and topic_word_prior = beta by
-#         WarpLDA collapsed Gibbs sampling for at most n_iter_max iterations,
-#         stopping early when 10 iterations improve the pseudo log-likelihood
-#         by less than convergence_tol (relative). The document-topic matrix
-#         returned by text2vec is the mean over n_iter_inference post-burn-in
-#         samples of the share of the document's tokens assigned to each topic
-#         (no prior mass added). The topic-word distribution is the smoothed
-#         posterior mean phi = (count + beta) / (topic tokens + V x beta).
-#         Perplexity uses the smoothed document mixture
-#         (tokens x theta + alpha) / (tokens + K x alpha). Held-out
-#         perplexity is document completion: half A of each held-out document
-#         is transformed into the fixed topic space, half B is scored.
-#         Each worker returns the topic-word counts, prevalence vectors, the
-#         per-document dominant topic and its share, the likelihood trace and
-#         the perplexities; the full training theta stays in the worker.
-# OUTPUT: fit_results (one list per fit, in job order).
+# Per K and seed: WarpLDA with alpha = alpha_sum / K and beta, up to n_iter_max
+# iterations, stopping when 10 iterations gain less than convergence_tol.
+# phi = (count + beta) / (topic tokens + V x beta). Perplexity uses the smoothed
+# mixture (tokens x theta + alpha) / (tokens + K x alpha); held-out perplexity
+# scores half B after inferring from half A.
 smooth_theta <- function(theta, n_tokens, alpha) {
   (theta * n_tokens + alpha) / (n_tokens + ncol(theta) * alpha)
 }
@@ -392,10 +324,8 @@ fit_one_model <- function(K, seed) {
 jobs <- expand.grid(seed = fit_seeds, K = candidate_k) |> arrange(desc(K), seed)
 job_list <- lapply(seq_len(nrow(jobs)), function(i) list(K = jobs$K[i], seed = jobs$seed[i]))
 
-# Optional development aid: LDA_FIT_CACHE=<directory> caches the worker results under a
-# content hash of the matrices and every fitting parameter, so an unchanged re-run can
-# skip the fits. Unset (the default) means the fits always run. Fits are deterministic
-# (checked below), so a cache hit returns exactly what the run would have produced.
+# LDA_FIT_CACHE=<directory> caches fit results keyed on a hash of the matrices and
+# fitting parameters. Fits are deterministic (checked below), so a cache hit is exact.
 fit_cache_dir  <- Sys.getenv("LDA_FIT_CACHE")
 fit_cache_file <- if (nzchar(fit_cache_dir)) {
   dir.create(fit_cache_dir, recursive = TRUE, showWarnings = FALSE)
@@ -424,22 +354,9 @@ if (fits_from_cache) {
 mark_stage("fits")
 
 # ---- Per-fit derived quantities ----
-# INPUT : fit_results; dtm_train.
-# DOES  : every fit arrives with its topics numbered in descending order of
-#         token-weighted prevalence (Topic 1 = largest share of training
-#         tokens; ties by sampler index; the sampler's original index is kept).
-#         Smoothed phi; word rankings by probability and by relevance
-#         (lambda log phi + (1 - lambda) log(phi / p_w), p_w = training corpus
-#         share of the word); coherence over the top coherence_top_n words:
-#         UMass (Mimno et al. 2011, per pair, using training-document
-#         co-occurrence) and NPMI (Lau et al. 2014, per pair, document
-#         co-occurrence, -1 for never co-occurring pairs); exclusivity = mean
-#         over the top words of phi_kw / sum_k' phi_k'w; mean pairwise cosine
-#         between topic-word vectors (Cao et al. 2009), mean pairwise symmetric
-#         Kullback-Leibler divergence (Deveaud et al. 2014), symmetric KL
-#         between the normalised singular values of phi and the token-weighted
-#         topic shares (Arun et al. 2010).
-# OUTPUT: fits (named list "K_seed"); term_frequency_share.
+# Topics are numbered by descending token share. Per fit: word rankings by probability
+# and relevance, UMass (Mimno et al. 2011) and NPMI (Lau et al. 2014) coherence,
+# exclusivity, and the Cao 2009, Deveaud 2014 and Arun 2010 K-selection metrics.
 finalize_fit <- function(fit) {
   fit$phi <- (fit$components + beta) / (rowSums(fit$components) + ncol(fit$components) * beta)
   fit
@@ -543,16 +460,9 @@ fit_traces <- bind_rows(lapply(fits, function(f) tibble(K = f$K, seed = f$seed, 
 mark_stage("diagnostics")
 
 # ---- Stability across seeds ----
-# INPUT : fits.
-# DOES  : for every K and pair of seeds, topics of the two fits are matched
-#         one-to-one by the Hungarian assignment (clue::solve_LSAP) that
-#         maximises the total cosine similarity between topic-word vectors.
-#         Per matched pair: cosine similarity and the Jaccard overlap of the
-#         top n_top_words words. Per seed pair: adjusted Rand index between the
-#         dominant-topic labellings of the training documents (label
-#         permutation invariant, so no matching is needed).
-# OUTPUT: stability_pairs (one row per matched topic pair); stability_summary
-#         (one row per K); stability_cos (cosine matrices for seeds 1 vs 2).
+# Topics of two seeds are matched by the Hungarian assignment on cosine similarity
+# (clue::solve_LSAP). Per pair: cosine and top-word Jaccard; per seed pair: adjusted
+# Rand index of the dominant-topic labels.
 adjusted_rand_index <- function(a, b) {
   tab <- table(a, b)
   n <- sum(tab)
@@ -593,18 +503,9 @@ stability_summary <- stability_pairs |>
             .groups = "drop")
 
 # ---- Model comparison and retention rule ----
-# INPUT : fits; stability_summary.
-# DOES  : one row per fit with its diagnostics; one row per K with the mean
-#         and standard deviation over seeds plus the stability measures. Ranks
-#         across K (1 = best): held-out perplexity ascending, NPMI coherence
-#         descending, exclusivity descending, matched-topic cosine descending;
-#         composite = mean of the four ranks. Retained for full inspection: the
-#         K with the lowest composite rank (ties: smaller K), the K with the
-#         highest NPMI coherence, and the perplexity choice under the
-#         one-standard-error rule: the smallest K whose mean held-out perplexity
-#         is within one seed standard deviation (at the best K) of the minimum
-#         (duplicates collapse to one model). The plain minimum is recorded too.
-# OUTPUT: model_comparison_by_fit; model_comparison_summary; retained_k.
+# Composite rank = mean of the ranks for perplexity, NPMI, exclusivity and cross-seed
+# cosine. Retained: best composite (ties: smaller K), best NPMI, and the smallest K
+# within one seed SD of the lowest held-out perplexity.
 model_comparison_by_fit <- bind_rows(lapply(fits, function(f) tibble(
   K = f$K, seed = f$seed, iterations_fit = f$iterations, iterations_heldout_inference = f$heldout_iterations,
   final_pseudo_loglikelihood = f$final_pseudo_loglik,
@@ -651,23 +552,11 @@ model_comparison_summary <- model_comparison_summary |>
 mark_stage("comparison")
 
 # ---- Retained models: full document-topic distributions and inspection tables ----
-# INPUT : retained_k; fits; dtm_train; dtm_heldout; docs.
-# DOES  : for each retained K the seed-1 model is fitted again in this process
-#         from the same seed; its topic-word counts must equal the worker's
-#         (determinism check). Its document-topic matrix covers the training
-#         documents; held-out documents are transformed with the fixed topics.
-#         Then, over all modeled documents: token-weighted topic shares, mean
-#         document shares, dominant-topic counts, shares by document type and
-#         by UTC day, topic-topic correlation of document shares, document
-#         concentration (largest share, active topics), author concentration
-#         (the most frequent stored author string among the documents whose
-#         dominant topic is k, and its share of them), representative
-#         documents (highest topic share among documents with at least
-#         representative_min_tokens modeled tokens, one document per distinct
-#         text and per distinct author, ties by doc_key), and the full
-#         document-topic table for every source document (NA for documents
-#         that are not modeled).
-# OUTPUT: retained (list per K of tables); doc-topic matrices.
+# Refit seed 1 of each retained K here and check it matches the worker's counts.
+# Held-out documents are transformed with the fixed topics. Then prevalence, daily and
+# by-type shares, correlations, concentration, top authors, representative documents
+# (>= representative_min_tokens tokens, distinct text and author), and the full
+# document-topic table.
 band_breaks <- c(0, 1, 4, 9, 24, 49, 99, Inf)
 band_labels <- c("1", "2-4", "5-9", "10-24", "25-49", "50-99", "100+")
 retained <- list()
@@ -800,11 +689,6 @@ for (K in retained_k) {
 mark_stage("retained")
 
 # ---- Accounting and processing-report tables ----
-# INPUT : docs; the counts recorded during text processing; vocabulary_table.
-# DOES  : document accounting from source to modeled corpus by document type;
-#         the text-processing report (rule, count); document length bands.
-# OUTPUT: document_accounting; text_processing_report; document_length_bands;
-#         stopwords_used; parameters_table.
 count_by_type <- function(mask) c(sum(mask & docs$doc_type == "comment"), sum(mask & docs$doc_type == "submission"), sum(mask))
 accounting_row <- function(stage, mask) tibble(stage = stage, comments = count_by_type(mask)[1],
                                                submissions = count_by_type(mask)[2], total = count_by_type(mask)[3])
@@ -908,10 +792,6 @@ parameters_table <- tribble(
   "retained_k", paste(retained_k, collapse = ", "))
 
 # ---- Figures ----
-# INPUT : the comparison, trace, stability and retained-model tables.
-# DOES  : PNG figures with a title, axis titles, tick labels, and a legend
-#         where more than one series or a colour scale is shown.
-# OUTPUT: figures/*.png.
 ink_series   <- "#2a78d6"
 ink_series_2 <- "#eb6834"
 ink_series_3 <- "#1baf7a"
@@ -937,7 +817,7 @@ theme_fig <- theme_minimal(base_size = 12) +
         plot.background  = element_rect(fill = "white", colour = NA))
 seed_colours <- setNames(c(ink_series, ink_series_2, ink_series_3)[seq_along(fit_seeds)], as.character(fit_seeds))
 
-# Figure 1 — candidate comparison: diagnostics against K, one point per seed, line through the seed mean.
+# Figure 1: candidate comparison: diagnostics against K, one point per seed, line through the seed mean.
 metric_labels <- c(heldout_perplexity = "Held-out perplexity, document completion (lower is better)",
                    train_perplexity   = "Training perplexity (lower is better)",
                    coherence_npmi     = "Coherence, NPMI over top 10 words (higher is better)",
@@ -973,7 +853,7 @@ fig1 <- ggplot() +
   theme_fig + theme(legend.position = "bottom")
 ggsave(file.path(fig_dir, "fig1_model_comparison.png"), fig1, width = 11, height = 13, dpi = 150, bg = "white")
 
-# Figure 2 — pseudo log-likelihood per training token along the sampling iterations, one panel per K.
+# Figure 2: pseudo log-likelihood per training token along the sampling iterations, one panel per K.
 fig2 <- fit_traces |>
   mutate(K_label = factor(paste("K =", K), levels = paste("K =", candidate_k))) |>
   ggplot(aes(x = iteration, y = pseudo_loglikelihood_per_token, colour = factor(seed))) +
@@ -985,7 +865,7 @@ fig2 <- fit_traces |>
   theme_fig + theme(legend.position = "bottom")
 ggsave(file.path(fig_dir, "fig2_fit_traces.png"), fig2, width = 12, height = 6.5, dpi = 150, bg = "white")
 
-# Figure 3 — stability: matched-topic cosine similarity between seeds, per K.
+# Figure 3: stability: matched-topic cosine similarity between seeds, per K.
 fig3 <- stability_pairs |>
   mutate(K_factor = factor(K, levels = candidate_k)) |>
   ggplot(aes(x = K_factor, y = cosine)) +
@@ -1000,7 +880,7 @@ ggsave(file.path(fig_dir, "fig3_stability_matched_cosine.png"), fig3, width = 9,
 for (tag in names(retained)) {
   r <- retained[[tag]]; K <- r$K
   topic_levels_desc <- rev(r$topic_labels)
-  # Figure 4 — topic prevalence, token-weighted and document-mean shares.
+  # Figure 4: topic prevalence, token-weighted and document-mean shares.
   prev_long <- r$topic_summary |>
     select(topic_label, `Share of modeled tokens` = token_share, `Mean share within documents` = doc_mean_share) |>
     pivot_longer(-topic_label, names_to = "measure", values_to = "share") |>
@@ -1015,7 +895,7 @@ for (tag in names(retained)) {
   ggsave(file.path(fig_dir, sprintf("fig4_topic_prevalence_%s.png", tag)), fig4,
          width = 9, height = 3 + 0.22 * K, dpi = 150, bg = "white", limitsize = FALSE)
 
-  # Figure 5 — the ten highest-probability words of every topic.
+  # Figure 5: the ten highest-probability words of every topic.
   tw <- top_words_probability |>
     filter(K == !!K, seed == fit_seeds[1], rank <= 10) |>
     arrange(topic, rank) |>
@@ -1034,7 +914,7 @@ for (tag in names(retained)) {
   ggsave(file.path(fig_dir, sprintf("fig5_top_words_%s.png", tag)), fig5,
          width = 2.6 * fig_cols + 1, height = 2.2 * ceiling(K / fig_cols) + 1, dpi = 130, bg = "white", limitsize = FALSE)
 
-  # Figure 6 — topic prevalence by UTC day.
+  # Figure 6: topic prevalence by UTC day.
   fig6 <- r$topic_prevalence_by_day |>
     mutate(topic_label = factor(paste("Topic", topic), levels = topic_levels_desc)) |>
     ggplot(aes(x = created_date_utc, y = topic_label, fill = token_share)) +
@@ -1046,7 +926,7 @@ for (tag in names(retained)) {
   ggsave(file.path(fig_dir, sprintf("fig6_topic_prevalence_by_day_%s.png", tag)), fig6,
          width = 10, height = 3 + 0.2 * K, dpi = 150, bg = "white", limitsize = FALSE)
 
-  # Figure 7 — document concentration: share of the dominant topic, by document length band.
+  # Figure 7: document concentration: share of the dominant topic, by document length band.
   fig7 <- r$concentration |>
     mutate(token_band = factor(paste(token_band, "modeled tokens"), levels = paste(band_labels, "modeled tokens"))) |>
     ggplot() +
@@ -1059,7 +939,7 @@ for (tag in names(retained)) {
     theme_fig
   ggsave(file.path(fig_dir, sprintf("fig7_document_concentration_%s.png", tag)), fig7, width = 11, height = 6, dpi = 150, bg = "white")
 
-  # Figure 8 — correlation between topic shares across documents.
+  # Figure 8: correlation between topic shares across documents.
   cor_long <- r$topic_correlation |>
     pivot_longer(-topic, names_to = "topic_b", values_to = "correlation") |>
     mutate(topic_b = as.integer(sub("topic_", "", topic_b)),
@@ -1076,7 +956,7 @@ for (tag in names(retained)) {
   ggsave(file.path(fig_dir, sprintf("fig8_topic_correlation_%s.png", tag)), fig8,
          width = max(8, 3 + 0.2 * K), height = max(8, 3.5 + 0.2 * K), dpi = 150, bg = "white", limitsize = FALSE)
 
-  # Figure 9 — stability matrix: topic-word cosine similarity, seed 1 topics against seed 2 topics.
+  # Figure 9: stability matrix: topic-word cosine similarity, seed 1 topics against seed 2 topics.
   sc <- stability_cos[[as.character(K)]]
   fig9 <- r$stability_matrix |>
     mutate(label_1 = factor(paste("Topic", seed1_topic), levels = topic_levels_desc),
@@ -1091,7 +971,7 @@ for (tag in names(retained)) {
   ggsave(file.path(fig_dir, sprintf("fig9_stability_matrix_%s.png", tag)), fig9,
          width = max(8, 3 + 0.2 * K), height = max(8, 3.5 + 0.2 * K), dpi = 150, bg = "white", limitsize = FALSE)
 
-  # Figure 10 — topic prevalence by document type.
+  # Figure 10: topic prevalence by document type.
   fig10 <- r$topic_prevalence_by_type |>
     mutate(topic_label = factor(paste("Topic", topic), levels = topic_levels_desc),
            doc_type = factor(doc_type, levels = c("comment", "submission"), labels = c("Comments", "Submissions"))) |>
@@ -1108,15 +988,9 @@ for (tag in names(retained)) {
 mark_stage("figures")
 
 # ---- Validation checks ----
-# INPUT : the objects above.
-# DOES  : reconcile every population and token count, recompute the
-#         document-term rows of sampled documents from the stored text by a
-#         second code path, confirm the split and the held-out halves, check
-#         the probability distributions, the determinism of the re-fits, the
-#         perplexity implementation against text2vec::perplexity, the topic
-#         matching, the retention rule, and the integrity of every retained
-#         model's output tables; stop if any check fails.
-# OUTPUT: validation_checks (one row per check).
+# Reconcile counts, rebuild sampled DTM rows a second way, and check the split,
+# distributions, refit determinism, perplexity vs text2vec::perplexity, matching and
+# retention. Stop on any failure.
 checks <- list()
 add_check <- function(check, detail, pass) checks[[length(checks) + 1L]] <<- tibble(check = check, detail = detail, pass = isTRUE(pass))
 
@@ -1291,10 +1165,6 @@ print(as.data.frame(validation_checks[, c("check", "pass")]), right = FALSE)
 mark_stage("validation")
 
 # ---- Write tables ----
-# INPUT : the measurement objects above.
-# DOES  : write one CSV per table and record its dimensions for the sidecars;
-#         stop before writing anything else if a validation check failed.
-# OUTPUT: CSV files under tables/.
 table_dims <- list()
 write_table <- function(tbl, name) {
   path <- file.path(tab_dir, name)
@@ -1354,11 +1224,8 @@ run_info <- bind_rows(
 write_table(run_info, "run_info.csv")
 
 # ---- Write provenance sidecars ----
-# INPUT : the CSV and PNG outputs; the 8 source Parquet files.
-# DOES  : write one <output>.manifest.yml per output recording input/output
-#         SHA256 hashes, this script's hash, git commit, parameters, seed and
-#         package versions.
-# OUTPUT: *.manifest.yml sidecars next to each output.
+# One <output>.manifest.yml per output: hashes, script hash, git commit, parameters,
+# seed and package versions.
 sha256 <- function(path) paste0("sha256:", digest(path, algo = "sha256", file = TRUE))
 git_commit <- tryCatch(system2("git", c("-C", project_dir, "rev-parse", "--short", "HEAD"), stdout = TRUE, stderr = FALSE),
                        error = function(e) "")
@@ -1400,9 +1267,6 @@ invisible(lapply(list.files(tab_dir, pattern = "\\.csv$", full.names = TRUE), wr
 invisible(lapply(list.files(fig_dir, pattern = "\\.png$", full.names = TRUE), write_sidecar))
 
 # ---- Console summary ----
-# INPUT : the headline tables.
-# DOES  : print them.
-# OUTPUT: console text.
 print(as.data.frame(document_accounting))
 print(as.data.frame(text_processing_report))
 print(as.data.frame(model_comparison_summary[, c("K", "iterations_fit_mean", "heldout_perplexity_mean", "coherence_npmi_mean",

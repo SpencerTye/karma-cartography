@@ -1,23 +1,14 @@
 #!/usr/bin/env python
-"""Three-day real embedding run: Qwen3-Embedding-0.6B on the RTX 3090 via TEI (float16).
+"""Embed every document from three UTC days (2026-07-15 to -17) with Qwen3-Embedding-0.6B via TEI.
 
-Embeds *every* document of three complete UTC days (2026-07-15, -16, -17) of the canonical
-Phase 1 table with the established Phase 2 TEI setup, keeps the embeddings linked to their
-original doc_key, and measures the run: an early time-to-completion estimate once enough real
-batches have run, then the actual totals at completion.
+Input: the canonical Phase 1 table. Uses the benchmark's TEI client, sampler and packer from
+throughput_benchmark.py, no vram_cap shim, max_batch_tokens 327,680 (reduced only if the memory
+check exceeds 19 GiB). Outputs: embeddings keyed to doc_key, run measurements and REPORT.md.
 
-This is NOT the benchmark. It reuses the benchmark's TEI client, NVML sampler, provenance manifest
-writer and token packer (imported from ../../benchmark_qwen3_4b_0p6b_throughput/scripts/
-throughput_benchmark.py) but launches TEI WITHOUT the vram_cap shim and imposes no allocator
-cap: max_batch_tokens is fixed at 327,680 in advance. A short real-batch memory
-check runs first; the budget is reduced only if the measured whole-card GPU memory actually
-exceeds 19 GiB.
-
-Stages (run inside the WSL2 venv):
+Stages (run in the WSL2 venv):
   prepare   verify inputs, build the ordered three-day subset, record the environment
-  embed     launch TEI (no shim), untimed warm-up + memory check, embed every document,
-            emit the first ETA, run to completion, save embeddings + measurements, verify
-  report    render REPORT.md from the recorded evidence
+  embed     start TEI, warm up and check memory, embed everything, save and verify
+  report    render REPORT.md
   all       prepare, embed, report
 """
 

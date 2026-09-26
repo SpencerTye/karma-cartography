@@ -1,14 +1,9 @@
-# July 2026 r/politics sample — descriptive analysis
-#
-# Reads the raw Parquet comment and submission files, reproduces the prior
-# headline descriptive measurements, and builds exploratory figures and tables.
-# Source Parquet is read-only. All derived outputs are written under
-# r_analysis_outputs/ and are reproducible by re-running this script.
+# Descriptive analysis of the July 2026 r/politics sample.
+# Input: comment and submission Parquet files under data_sample/.
+# Output: figures, CSV tables and manifest sidecars under r_analysis_outputs/,
+# plus a check against the earlier headline numbers.
 
 # ---- Setup: packages, paths, output directories ----
-# INPUT : none.
-# DOES  : load packages; define source paths; create output folders.
-# OUTPUT: path variables; empty figures/ and tables/ directories.
 library(nanoparquet)
 library(dplyr)
 library(tidyr)
@@ -35,10 +30,7 @@ comment_files    <- list.files(comments_dir, pattern = "\\.parquet$", full.names
 submission_files <- list.files(submissions_dir, pattern = "\\.parquet$", full.names = TRUE)
 
 # ---- Read source data ----
-# INPUT : 7 comment Parquet files + 1 submission Parquet file.
-# DOES  : read each file and stack; then keep only the columns used below
-#         (this is column selection only — no rows are dropped).
-# OUTPUT: comments, submissions data frames.
+# 7 comment files and 1 submission file; keep only the columns used below.
 comments <- lapply(comment_files, read_parquet) |>
   bind_rows() |>
   select(id, link_id, body, created_utc, subreddit, subreddit_id)
@@ -48,10 +40,7 @@ submissions <- lapply(submission_files, read_parquet) |>
   select(id, created_utc, subreddit, subreddit_id)
 
 # ---- Derived variables (time + thread key) ----
-# INPUT : comments, submissions (created_utc as epoch seconds; comment link_id 't3_...').
-# DOES  : cast created_utc to double; derive UTC datetime, UTC calendar date, UTC hour;
-#         derive thread = link_id with the 't3_' prefix removed.
-# OUTPUT: comments, submissions with added columns.
+# UTC datetime, date and hour from created_utc; thread = link_id without 't3_'.
 comments <- comments |>
   mutate(
     created_utc = as.numeric(created_utc),
@@ -65,19 +54,13 @@ submissions <- submissions |>
   mutate(created_utc = as.numeric(created_utc))
 
 # ---- Measurement: totals and single-community check ----
-# INPUT : comments, submissions.
-# DOES  : count rows; list the community present in each record type.
-# OUTPUT: n_comments, n_submissions; community_comments, community_submissions.
 n_comments    <- nrow(comments)
 n_submissions <- nrow(submissions)
 community_comments    <- comments |> count(subreddit, subreddit_id, name = "rows")
 community_submissions <- submissions |> count(subreddit, subreddit_id, name = "rows")
 
 # ---- Measurement: exact comment-body frequency (byte-identical) ----
-# INPUT : comments (body, thread).
-# DOES  : group by exact body value (no trimming, case-folding, or Unicode
-#         normalization); count occurrences and distinct threads per value.
-# OUTPUT: body_freq (one row per distinct body value).
+# Exact body match (no trimming, case-folding or Unicode normalization).
 body_freq <- comments |>
   group_by(body) |>
   summarise(occ = n(), threads = n_distinct(thread), .groups = "drop")
@@ -89,10 +72,7 @@ rows_once     <- sum(body_freq$occ[body_freq$occ == 1])
 rows_repeated <- sum(body_freq$occ[body_freq$occ >= 2])
 
 # ---- Measurement: occurrence-frequency distribution ----
-# INPUT : body_freq.
-# DOES  : bucket distinct body values by occurrence count into fixed bands; also
-#         count distinct bodies at each exact occurrence value (for the figure).
-# OUTPUT: occ_distribution (banded); occ_ff (frequency-of-frequencies).
+# Banded counts, plus frequency-of-frequencies for the figure.
 occ_breaks <- c(0, 1, 2, 5, 10, 100, 1000, Inf)
 occ_labels <- c("1", "2", "3-5", "6-10", "11-100", "101-1000", "1001+")
 occ_distribution <- body_freq |>
@@ -104,11 +84,7 @@ occ_distribution <- body_freq |>
 occ_ff <- body_freq |> count(occ, name = "n_texts")
 
 # ---- Measurement: within-thread vs across-thread recurrence (repeated bodies) ----
-# INPUT : body_freq restricted to repeated values (occ >= 2).
-#         Population for this section: comment bodies that occur 2+ times.
-# DOES  : split repeated values into single-thread vs multi-thread; band by the
-#         number of distinct threads a value spans.
-# OUTPUT: repeated_freq; within/across counts; thread_distribution (banded).
+# Bodies occurring 2+ times, split by whether they span one thread or several.
 repeated_freq      <- body_freq |> filter(occ >= 2)
 n_within_single    <- sum(repeated_freq$threads == 1)
 n_across_multi     <- sum(repeated_freq$threads >= 2)
@@ -125,10 +101,7 @@ thread_distribution <- repeated_freq |>
             .groups = "drop")
 
 # ---- Measurement: concentration among repeated texts ----
-# INPUT : repeated_freq ordered by occurrences (descending).
-# DOES  : compute the cumulative share of repeated rows across ranked texts
-#         (Lorenz-style); summarise the share held by the top-k texts.
-# OUTPUT: concentration; concentration_curve (with origin); concentration_summary.
+# Lorenz-style cumulative share of repeated rows, and the share held by the top texts.
 concentration <- repeated_freq |>
   arrange(desc(occ)) |>
   mutate(rank = row_number(),
@@ -145,16 +118,10 @@ concentration_curve <- bind_rows(
 )
 
 # ---- Measurement: activity by date and by hour (UTC) ----
-# INPUT : comments (date, hour).
-# DOES  : count comments per UTC calendar day and per UTC clock hour.
-# OUTPUT: activity_by_date; activity_by_hour.
 activity_by_date <- comments |> count(date, name = "comments")
 activity_by_hour <- comments |> count(hour, name = "comments")
 
 # ---- Measurement: comments per thread ----
-# INPUT : comments (thread).
-# DOES  : count comments per distinct thread; summarise the distribution.
-# OUTPUT: per_thread_counts; per_thread_summary.
 per_thread_counts  <- comments |> count(thread, name = "comments")
 per_thread_summary <- tibble(
   n_threads = nrow(per_thread_counts),
@@ -167,11 +134,7 @@ per_thread_summary <- tibble(
 )
 
 # ---- Join: comments to their submission; comment-to-submission timing ----
-# INPUT : comments (thread, created_utc); submissions (id, created_utc).
-# DOES  : count referenced vs matched threads; inner-join comment.thread =
-#         submission.id (matched threads only); compute delta = comment minus
-#         submission creation time in seconds.
-# OUTPUT: thread-match counts; matched (delta_sec); delta_summary; delta_buckets.
+# Inner join on thread = submission id; delta_sec = comment time minus submission time.
 n_threads_referenced <- n_distinct(comments$thread)
 n_threads_matched    <- n_distinct(comments$thread[comments$thread %in% submissions$id])
 
@@ -204,10 +167,7 @@ delta_buckets <- matched |>
   mutate(pct = round(100 * comments / n_comments_matched, 2))
 
 # ---- Measurement: most-frequent exact comment bodies (top 300) ----
-# INPUT : body_freq.
-# DOES  : take the 300 highest-occurrence values; add an md5 of the exact body,
-#         its character length, and a one-line preview (newlines -> spaces).
-# OUTPUT: top_repeated_bodies.
+# md5 of the exact body, its length, and a one-line preview.
 top_repeated_bodies <- body_freq |>
   arrange(desc(occ)) |>
   slice_head(n = 300) |>
@@ -219,9 +179,7 @@ top_repeated_bodies <- body_freq |>
   select(md5, n_chars, occ, threads, preview)
 
 # ---- Reproduction check vs prior reported values ----
-# INPUT : the measurements above; prior headline values from sample_analysis.md.
-# DOES  : assemble a side-by-side comparison and flag exact agreement.
-# OUTPUT: reproduction_check.
+# Prior values are the headline numbers from sample_analysis.md.
 reproduction_check <- tribble(
   ~metric,                          ~prior,   ~computed,
   "total_comments",                 891397,   n_comments,
@@ -258,15 +216,12 @@ reproduction_check <- tribble(
 print(reproduction_check, n = Inf)
 
 # ---- Figures ----
-# INPUT : the measurement objects above.
-# DOES  : build 5 exploratory plots and save them as PNG. Heavy right-skew is
-#         handled with log scales, stated in the axis labels.
-# OUTPUT: 5 PNG files under figures/.
+# Five PNGs; skewed axes use log scales, noted in the labels.
 ink <- "#2b6cb0"   # single accessible blue for data marks
 ref <- "grey55"    # reference lines
 theme_set(theme_minimal(base_size = 12))
 
-# Figure 1 — daily comment volume (bars anchored at zero).
+# Figure 1: daily comment volume.
 fig_daily <- ggplot(activity_by_date, aes(date, comments)) +
   geom_col(fill = ink, width = 0.7) +
   scale_y_continuous(labels = comma, expand = expansion(mult = c(0, 0.05))) +
@@ -276,7 +231,7 @@ fig_daily <- ggplot(activity_by_date, aes(date, comments)) +
 ggsave(file.path(fig_dir, "fig1_daily_comment_volume.png"), fig_daily,
        width = 9, height = 5, dpi = 150)
 
-# Figure 2 — exact-text recurrence distribution (frequency-of-frequencies, log-log).
+# Figure 2: exact-text recurrence, frequency-of-frequencies on log-log axes.
 fig_recurrence <- ggplot(occ_ff, aes(occ, n_texts)) +
   geom_point(colour = ink, alpha = 0.7, size = 1.5) +
   scale_x_log10(labels = comma) +
@@ -288,7 +243,7 @@ fig_recurrence <- ggplot(occ_ff, aes(occ, n_texts)) +
 ggsave(file.path(fig_dir, "fig2_recurrence_distribution.png"), fig_recurrence,
        width = 8, height = 5.5, dpi = 150)
 
-# Figure 3 — concentration among repeated texts (cumulative-share / Lorenz-style).
+# Figure 3: concentration among repeated texts (Lorenz-style).
 fig_concentration <- ggplot(concentration_curve, aes(cum_share_texts, cum_share_rows)) +
   geom_abline(slope = 1, intercept = 0, linetype = "dashed", colour = ref) +
   geom_line(colour = ink, linewidth = 1) +
@@ -301,7 +256,7 @@ fig_concentration <- ggplot(concentration_curve, aes(cum_share_texts, cum_share_
 ggsave(file.path(fig_dir, "fig3_recurrence_concentration.png"), fig_concentration,
        width = 7, height = 7, dpi = 150)
 
-# Figure 4 — occurrences vs distinct threads per repeated body (log-log).
+# Figure 4: occurrences vs distinct threads per repeated body (log-log).
 fig_occ_threads <- ggplot(repeated_freq, aes(occ, threads)) +
   geom_abline(slope = 1, intercept = 0, linetype = "dashed", colour = ref) +
   geom_point(colour = ink, alpha = 0.25, size = 1.3) +
@@ -314,7 +269,7 @@ fig_occ_threads <- ggplot(repeated_freq, aes(occ, threads)) +
 ggsave(file.path(fig_dir, "fig4_occurrences_vs_threads.png"), fig_occ_threads,
        width = 9, height = 6, dpi = 150)
 
-# Figure 5 — elapsed time from submission to comment, matched threads (log scale).
+# Figure 5: time from submission to comment on matched threads (log scale).
 fig_delta <- matched |>
   mutate(log_delta = log10(delta_sec + 1)) |>
   ggplot(aes(log_delta)) +
@@ -330,9 +285,6 @@ ggsave(file.path(fig_dir, "fig5_submission_to_comment_delay.png"), fig_delta,
        width = 9, height = 5, dpi = 150)
 
 # ---- Write supporting tables ----
-# INPUT : the measurement objects above.
-# DOES  : write one CSV per table.
-# OUTPUT: CSV files under tables/.
 write_csv(reproduction_check,    file.path(tab_dir, "reproduction_check.csv"))
 write_csv(occ_distribution,      file.path(tab_dir, "occurrence_frequency_distribution.csv"))
 write_csv(occ_ff,                file.path(tab_dir, "occurrence_frequency_of_frequencies.csv"))
@@ -346,10 +298,8 @@ write_csv(delta_buckets,         file.path(tab_dir, "submission_to_comment_delta
 write_csv(top_repeated_bodies,   file.path(tab_dir, "top_repeated_comment_bodies.csv"))
 
 # ---- Write provenance sidecars ----
-# INPUT : the CSV and PNG outputs; the 8 source Parquet files.
-# DOES  : write one <output>.manifest.yml per output recording input/output
-#         SHA256 hashes, this script's hash, git commit, and package versions.
-# OUTPUT: *.manifest.yml sidecars next to each output.
+# One <output>.manifest.yml per output: input/output SHA256, script hash,
+# git commit and package versions.
 sha256 <- function(path) paste0("sha256:", digest(path, algo = "sha256", file = TRUE))
 
 git_commit <- tryCatch(

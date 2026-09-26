@@ -1,11 +1,8 @@
-# July 2026 r/politics sample — Phase 1A: read-only review of the retained LDA models (K = 10, K = 60)
-#
-# Reads the tables delivered by july2026_politics_lda_topics.R under
-# r_analysis_outputs/lda_topics/ and the source Parquet text (read-only, needed
-# only to display documents and to count a few whole-word occurrences). Fits no
-# model, changes no preprocessing, alters no delivered file. Writes review-only
-# tables and figures under r_analysis_outputs/lda_topics_review/. Topics keep
-# their delivered numbers; nothing here names or interprets a topic.
+# Review of the retained Phase 1A LDA models (K = 10 and K = 60), July 2026 r/politics sample.
+# Input: tables written by july2026_politics_lda_topics.R (r_analysis_outputs/lda_topics/)
+# and the source Parquet text, used only to show documents and count a few words.
+# Output: review tables and figures under r_analysis_outputs/lda_topics_review/.
+# No model is refitted and topic numbers are unchanged.
 
 # ---- Setup ----
 suppressPackageStartupMessages({
@@ -33,7 +30,7 @@ invisible(file.remove(list.files(c(fig_dir, tab_dir), pattern = "\\.(csv|png|yml
 # Review parameters (every value is recorded in the manifests).
 retained_k          <- c(10L, 60L)
 review_seed         <- 20260906L   # seeds the "typical document" sample (rule C)
-n_top_share         <- 10L         # rule A: delivered rule (top share, >= 25 tokens, distinct text and author) extended from 5 to 10 documents
+n_top_share         <- 10L         # rule A: the original rule (top share, >= 25 tokens, distinct text and author) extended from 5 to 10 documents
 rep_min_tokens      <- 25L
 n_typical           <- 10L         # rule C: seeded random sample of documents dominated by the topic
 typical_min_share   <- 0.5
@@ -42,7 +39,7 @@ typical_max_tokens  <- 100L
 narrow_min_tokens   <- 10L         # narrowness measures use documents with at least this many modeled tokens
 n_top_narrow        <- 100L        # ... and the 100 highest-share documents (>= 25 tokens) per topic
 n_words_shown       <- 15L
-relevance_lambda    <- 0.6         # as delivered
+relevance_lambda    <- 0.6         # as in the original run
 n_words_other_seed  <- 8L
 peak_ratio_flag     <- 3           # temporal concentration flags (measured thresholds, no inference)
 top3_share_flag     <- 0.25
@@ -66,13 +63,11 @@ sha256 <- function(path) paste0("sha256:", digest(path, algo = "sha256", file = 
 checks <- list()
 add_check <- function(group, check, measured, pass) checks[[length(checks) + 1L]] <<- tibble(group = group, check = check, measured = measured, pass = isTRUE(pass))
 
-# ---- Integrity of the delivered outputs (hash on disk vs. the delivered manifests) ----
-# INPUT : every *.manifest.yml under lda_topics/tables and lda_topics/figures.
-# DOES  : re-hash the file each manifest describes; compare; record script hash and git commit.
-# OUTPUT: delivered_outputs_integrity (one row per delivered output); the list of reviewed files.
-log_line("hashing delivered outputs")
+# ---- Integrity of the existing outputs (hash on disk vs. their manifests) ----
+# Re-hash each file under lda_topics/ and compare with its manifest.
+log_line("hashing existing outputs")
 manifest_files <- list.files(c(in_tab, in_fig), pattern = "\\.manifest\\.yml$", full.names = TRUE)
-delivered_outputs_integrity <- bind_rows(lapply(manifest_files, function(mf) {
+saved_outputs_integrity <- bind_rows(lapply(manifest_files, function(mf) {
   mfy  <- read_yaml(mf)
   path <- mfy$output_file
   tibble(file = basename(path), kind = if (grepl("\\.csv$", path)) "table" else "figure",
@@ -83,23 +78,22 @@ delivered_outputs_integrity <- bind_rows(lapply(manifest_files, function(mf) {
          manifest_timestamp = mfy$timestamp)
 })) |> mutate(hash_matches_manifest = manifest_hash == current_hash) |> arrange(kind, file)
 lda_script_hash <- sha256(lda_script_path)
-add_check("integrity", "every delivered table and figure on disk has the hash recorded in its manifest",
-          sprintf("%d of %d match", sum(delivered_outputs_integrity$hash_matches_manifest), nrow(delivered_outputs_integrity)),
-          all(delivered_outputs_integrity$hash_matches_manifest) && nrow(delivered_outputs_integrity) == 55)
-add_check("integrity", "the LDA script on disk has the script hash recorded in every delivered manifest",
-          sprintf("%s; %d distinct manifest hashes", lda_script_hash, n_distinct(delivered_outputs_integrity$manifest_script_hash)),
-          all(delivered_outputs_integrity$manifest_script_hash == lda_script_hash))
+add_check("integrity", "every existing table and figure on disk has the hash recorded in its manifest",
+          sprintf("%d of %d match", sum(saved_outputs_integrity$hash_matches_manifest), nrow(saved_outputs_integrity)),
+          all(saved_outputs_integrity$hash_matches_manifest) && nrow(saved_outputs_integrity) == 55)
+add_check("integrity", "the LDA script on disk has the script hash recorded in every manifest",
+          sprintf("%s; %d distinct manifest hashes", lda_script_hash, n_distinct(saved_outputs_integrity$manifest_script_hash)),
+          all(saved_outputs_integrity$manifest_script_hash == lda_script_hash))
 
-# ---- Read the delivered tables ----
-# INPUT : lda_topics/tables/*.csv (read-only).
-# OUTPUT: in-memory copies; the two per-document tables are read with data.table::fread.
-log_line("reading delivered tables")
+# ---- Read the LDA tables ----
+# The two per-document tables are read with data.table::fread.
+log_line("reading tables")
 read_tab <- function(name) read_csv(file.path(in_tab, name), show_col_types = FALSE, guess_max = 100000)
 per_k <- function(stem, reader = read_tab) setNames(lapply(retained_k, function(K) reader(sprintf("%s_%s.csv", stem, tag_of(K)))), tag_of(retained_k))
 topic_summary       <- per_k("topic_summary")
 prev_day            <- per_k("topic_prevalence_by_day")
 prev_type           <- per_k("topic_prevalence_by_type")
-rep_delivered       <- per_k("representative_documents")
+rep_saved       <- per_k("representative_documents")
 stab_matrix         <- per_k("stability_matrix_seed1_vs_seed2")
 conc_summary        <- per_k("document_concentration_summary")
 topic_correlation   <- per_k("topic_correlation")
@@ -110,8 +104,8 @@ top_rel_all         <- read_tab("top_words_by_relevance_all_models.csv")   |> fi
 stability_pairs     <- read_tab("stability_pairs.csv") |> filter(K %in% retained_k)
 stopwords_used      <- read_tab("stopwords_used.csv")
 model_comparison    <- read_tab("model_comparison_summary.csv")
-parameters_delivered <- read_tab("parameters.csv")
-validation_delivered <- read_tab("validation_checks.csv")
+parameters_saved <- read_tab("parameters.csv")
+validation_saved <- read_tab("validation_checks.csv")
 text_processing_report <- read_tab("text_processing_report.csv")
 input_tables_read <- c("topic_summary", "topic_prevalence_by_day", "topic_prevalence_by_type", "representative_documents",
                        "stability_matrix_seed1_vs_seed2", "document_concentration_summary", "topic_correlation",
@@ -119,21 +113,16 @@ input_tables_read <- c("topic_summary", "topic_prevalence_by_day", "topic_preval
 input_table_files <- c(unlist(lapply(input_tables_read, function(s) sprintf("%s_%s.csv", s, tag_of(retained_k)))),
                        "top_words_by_probability_all_models.csv", "top_words_by_relevance_all_models.csv", "stability_pairs.csv",
                        "stopwords_used.csv", "model_comparison_summary.csv", "parameters.csv", "validation_checks.csv", "text_processing_report.csv")
-add_check("delivered", "the retained K recorded in parameters.csv are the models reviewed here",
-          parameters_delivered$value[parameters_delivered$parameter == "retained_k"],
-          parameters_delivered$value[parameters_delivered$parameter == "retained_k"] == paste(retained_k, collapse = ", "))
-add_check("delivered", "all delivered validation checks are TRUE",
-          sprintf("%d of %d", sum(validation_delivered$pass), nrow(validation_delivered)), all(validation_delivered$pass))
+add_check("saved", "the retained K recorded in parameters.csv are the models reviewed here",
+          parameters_saved$value[parameters_saved$parameter == "retained_k"],
+          parameters_saved$value[parameters_saved$parameter == "retained_k"] == paste(retained_k, collapse = ", "))
+add_check("saved", "all validation checks from the original run are TRUE",
+          sprintf("%d of %d", sum(validation_saved$pass), nrow(validation_saved)), all(validation_saved$pass))
 
-# ---- Source text (read-only; used only to display documents and count whole words) ----
-# INPUT : the 8 Parquet files.
-# DOES  : text per doc_key exactly as the LDA script built it; a letters-only
-#         normalised form for near-duplicate detection (lower case, URLs removed,
-#         every non-letter run collapsed to one space); whole-word counts of the
-#         tracked words on the lower-cased, URL-stripped text, using the LDA
-#         script's token boundaries (a word is a maximal run of letters,
-#         apostrophes join). Nothing is written back.
-# OUTPUT: src_text (doc_key, text, text_norm, norm_count_corpus, w_<word> ...).
+# ---- Source text, used only to display documents and count whole words ----
+# Text per doc_key as the LDA script built it, a letters-only normalised form for
+# near-duplicate detection, and whole-word counts of the tracked words using the
+# LDA script's token boundaries.
 log_line("reading source text")
 comment_files    <- list.files(comments_dir,    pattern = "\\.parquet$", full.names = TRUE)
 submission_files <- list.files(submissions_dir, pattern = "\\.parquet$", full.names = TRUE)
@@ -185,7 +174,7 @@ for (K in retained_k) {
   n_modeled <- nrow(m)
   rm(dt)
 
-  # -- 1. Topic-word evidence: both delivered rankings, mass concentration, shared vocabulary --
+  # -- 1. Topic-word evidence: both saved rankings, mass concentration, shared vocabulary --
   tp <- top_prob_all |> filter(K == !!K, seed == 1L) |> arrange(topic, rank)
   tr <- top_rel_all  |> filter(K == !!K, seed == 1L) |> arrange(topic, rank)
   words_long <- bind_rows(tp |> mutate(ranking = "probability"), tr |> mutate(ranking = "relevance")) |>
@@ -216,7 +205,7 @@ for (K in retained_k) {
               term_share_of_training_tokens = first(term_share_of_training_tokens), .groups = "drop") |>
     filter(n_topics_with_word_in_top10 >= 2) |> arrange(desc(n_topics_with_word_in_top10), term) |> mutate(K = K, .before = 1)
 
-  # -- 2. Representative documents: rule A (delivered rule, 10 per topic) and rule C (seeded typical sample) --
+  # -- 2. Representative documents: rule A (original rule, 10 per topic) and rule C (seeded typical sample) --
   cand_idx <- which(m$n_tokens_modeled >= rep_min_tokens)
   meta_cols <- c("doc_key", "doc_id", "doc_type", "author", "created_utc", "submission_id", "link_id", "parent_id", "split",
                  "n_tokens_modeled", "n_tokens_letters", "dominant_topic", "dominant_topic_share", "norm_count_corpus", wcols)
@@ -234,13 +223,13 @@ for (K in retained_k) {
   setcolorder(rep_top, c("topic", "rank", "topic_share_in_document", "doc_key", "doc_id", "doc_type", "author", "created_utc", "created_utc_iso",
                          "submission_id", "link_id", "parent_id", "split", "n_tokens_modeled", "n_tokens_letters", "dominant_topic",
                          "dominant_topic_share", "norm_count_corpus", "near_duplicate_of_higher_rank", wcols, "text_preview", "text"))
-  del <- as.data.table(rep_delivered[[tag]])
-  cmp <- merge(del[, .(topic, rank, doc_key_delivered = doc_key, share_delivered = topic_share_in_document)],
+  del <- as.data.table(rep_saved[[tag]])
+  cmp <- merge(del[, .(topic, rank, doc_key_saved = doc_key, share_saved = topic_share_in_document)],
                rep_top[rank <= 5L, .(topic, rank, doc_key, topic_share_in_document)], by = c("topic", "rank"))
-  add_check(tag, "rule A reproduces the delivered representative documents in its first five ranks (doc_key and share)",
-            sprintf("%d of %d rows agree; max share difference %g", sum(cmp$doc_key == cmp$doc_key_delivered), nrow(del),
-                    max(abs(cmp$share_delivered - cmp$topic_share_in_document))),
-            nrow(cmp) == nrow(del) && all(cmp$doc_key == cmp$doc_key_delivered) && max(abs(cmp$share_delivered - cmp$topic_share_in_document)) < 1e-6)
+  add_check(tag, "rule A reproduces the saved representative documents in its first five ranks (doc_key and share)",
+            sprintf("%d of %d rows agree; max share difference %g", sum(cmp$doc_key == cmp$doc_key_saved), nrow(del),
+                    max(abs(cmp$share_saved - cmp$topic_share_in_document))),
+            nrow(cmp) == nrow(del) && all(cmp$doc_key == cmp$doc_key_saved) && max(abs(cmp$share_saved - cmp$topic_share_in_document)) < 1e-6)
 
   set.seed(review_seed)
   rep_typical <- rbindlist(lapply(seq_len(K), function(k) {
@@ -294,16 +283,16 @@ for (K in retained_k) {
                top100_top_author = names(a)[1], top100_top_author_docs = as.integer(a[1]))
   }))
   narrowness <- tibble(topic = seq_len(K)) |>
-    left_join(ts |> transmute(topic, token_share, dominant_docs, top_author_delivered = top_author,
-                              top_author_share_delivered = top_author_share_of_dominant_docs), by = "topic") |>
+    left_join(ts |> transmute(topic, token_share, dominant_docs, top_author_saved = top_author,
+                              top_author_share_saved = top_author_share_of_dominant_docs), by = "topic") |>
     left_join(all_dom, by = "topic") |> left_join(narrow, by = "topic") |> left_join(top_auth_w, by = "topic") |>
     left_join(top_text, by = "topic") |> left_join(top100, by = "topic") |>
     mutate(top_author_share_ge10_tokens = top_author_docs_ge10_tokens / dominant_docs_ge10_tokens, K = K, .before = 1)
-  add_check(tag, "dominant-document counts recomputed from the document-topic table equal the delivered topic summary",
+  add_check(tag, "dominant-document counts recomputed from the document-topic table equal the saved topic summary",
             sprintf("%d of %d topics agree", sum(narrowness$dominant_docs == narrowness$dominant_docs_all_lengths), K),
             all(narrowness$dominant_docs == narrowness$dominant_docs_all_lengths))
   top_auth_all <- m[, .N, by = .(topic = dominant_topic, author)][order(topic, -N, author)][, head(.SD, 1L), by = topic]
-  add_check(tag, "top author per topic recomputed over all dominant documents equals the delivered top_author",
+  add_check(tag, "top author per topic recomputed over all dominant documents equals the saved top_author",
             sprintf("%d of %d topics agree", sum(top_auth_all$author == ts$top_author[top_auth_all$topic]), K),
             all(top_auth_all$author == ts$top_author[top_auth_all$topic]))
 
@@ -335,7 +324,7 @@ for (K in retained_k) {
   add_check(tag, "matched cosine in stability_pairs equals the matched cell of the seed 1 x seed 2 matrix; seed-2 counterpart ids agree",
             sprintf("max difference %g; %d of %d ids agree", max(abs(stability$cosine_seed2 - stability$matched_cosine_seed2_from_matrix)), ids_agree, K),
             max(abs(stability$cosine_seed2 - stability$matched_cosine_seed2_from_matrix)) < 1e-9 && ids_agree == K && nrow(matched_ids) == K)
-  add_check(tag, "matched cosine to seeds 2 and 3 in the delivered topic summary equals stability_pairs",
+  add_check(tag, "matched cosine to seeds 2 and 3 in the saved topic summary equals stability_pairs",
             sprintf("max difference %g", max(abs(c(stability$cosine_seed2 - ts$matched_cosine_vs_seed_2[stability$topic],
                                                     stability$cosine_seed3 - ts$matched_cosine_vs_seed_3[stability$topic])))),
             max(abs(c(stability$cosine_seed2 - ts$matched_cosine_vs_seed_2[stability$topic],
@@ -363,7 +352,7 @@ for (K in retained_k) {
            share_of_topic_tokens_on_peak_day, share_of_topic_tokens_top3_days, days_to_half_of_topic_tokens,
            uniform_reference_peak_day_share, uniform_reference_top3_days_share, concentration_flag, top3_days) |>
     mutate(K = K, .before = 1)
-  add_check(tag, "daily token shares sum to 1 on every day and topic tokens over days reproduce the delivered all-document token share",
+  add_check(tag, "daily token shares sum to 1 on every day and topic tokens over days reproduce the saved all-document token share",
             sprintf("day sums %.6f..%.6f; max share difference %g",
                     min(tapply(pd$token_share, pd$created_date_utc, sum)), max(tapply(pd$token_share, pd$created_date_utc, sum)),
                     max(abs(tapply(pd$topic_tokens, pd$topic, sum) / sum(pd$topic_tokens) - ts$token_share))),
@@ -457,10 +446,8 @@ add_check("source", "tracked words: SMART membership on disk matches the status 
           all(tracked_words_corpus$in_smart_list == (tracked_words_corpus$status != "kept")))
 out_tables[["tracked_words_corpus.csv"]] <- tracked_words_corpus
 
-# ---- README consistency: claims in lda_topics/README.md against the delivered tables ----
-# INPUT : the delivered tables and the values this review computed.
-# DOES  : recompute each numeric claim; pass when the rounded value agrees.
-# OUTPUT: readme_consistency_checks.
+# ---- README consistency: claims in lda_topics/README.md against the saved tables ----
+# Each numeric claim is recomputed and passes when the rounded value agrees.
 rc <- list()
 add_rc <- function(section, claim, measured, pass) rc[[length(rc) + 1L]] <<- tibble(section = section, readme_claim = claim, measured = measured, agrees = isTRUE(pass))
 ts10 <- review$K010$ts; ts60 <- review$K060$ts
@@ -498,9 +485,9 @@ add_rc("K = 10", "50-99-token documents: median dominant share 0.57 (K = 10) / 0
 add_rc("K = 10", "the identical AutoModerator notice sits in the 50-99-token band (measured: share of that band's documents authored by AutoModerator)",
        sprintf("%.1f%% of %d documents", 100 * review$K010$automod_50_99$share_automoderator, review$K010$automod_50_99$docs), review$K010$automod_50_99$share_automoderator > 0.25)
 add_rc("K = 10", "a 27-token comment repeating one word reaches a 0.996 share of Topic 5",
-       sprintf("rank-1 document of Topic 5: %d tokens, share %.3f", rep_delivered$K010$n_tokens_modeled[rep_delivered$K010$topic == 5][1],
-               rep_delivered$K010$topic_share_in_document[rep_delivered$K010$topic == 5][1]),
-       rep_delivered$K010$n_tokens_modeled[rep_delivered$K010$topic == 5][1] == 27 && r2(rep_delivered$K010$topic_share_in_document[rep_delivered$K010$topic == 5][1], 3) == 0.996)
+       sprintf("rank-1 document of Topic 5: %d tokens, share %.3f", rep_saved$K010$n_tokens_modeled[rep_saved$K010$topic == 5][1],
+               rep_saved$K010$topic_share_in_document[rep_saved$K010$topic == 5][1]),
+       rep_saved$K010$n_tokens_modeled[rep_saved$K010$topic == 5][1] == 27 && r2(rep_saved$K010$topic_share_in_document[rep_saved$K010$topic == 5][1], 3) == 0.996)
 add_rc("K = 60", "Topic 1: 6.4% of tokens; AutoModerator is top author of 68.6% of its dominant documents; cosine 1.00 / 1.00",
        sprintf("%.2f%%; %.1f%%; %.2f / %.2f", 100 * ts60$token_share[1], 100 * ts60$top_author_share_of_dominant_docs[1], ts60$matched_cosine_vs_seed_2[1], ts60$matched_cosine_vs_seed_3[1]),
        r2(100 * ts60$token_share[1]) == 6.4 && r2(100 * ts60$top_author_share_of_dominant_docs[1]) == 68.6 &&
@@ -556,12 +543,12 @@ add_rc("comparison", "held-out perplexity 2,625.1 (SD 10.5) at K = 60, 2,627.7 a
          r2(mc$heldout_perplexity_mean[mc$K == 100]) == 2610.8 && r2(mc$heldout_perplexity_sd[mc$K == 100]) == 15.2 &&
          r2(mc$heldout_perplexity_mean[mc$K == 100] + mc$heldout_perplexity_sd[mc$K == 100]) == 2626.0 && mc$composite_rank[mc$K == 10] == 2.75)
 add_rc("files", "17 PNG figures and 38 CSV tables, each with a manifest",
-       sprintf("%d figures, %d tables, %d manifests", sum(delivered_outputs_integrity$kind == "figure"), sum(delivered_outputs_integrity$kind == "table"), length(manifest_files)),
-       sum(delivered_outputs_integrity$kind == "figure") == 17 && sum(delivered_outputs_integrity$kind == "table") == 38)
+       sprintf("%d figures, %d tables, %d manifests", sum(saved_outputs_integrity$kind == "figure"), sum(saved_outputs_integrity$kind == "table"), length(manifest_files)),
+       sum(saved_outputs_integrity$kind == "figure") == 17 && sum(saved_outputs_integrity$kind == "table") == 38)
 add_rc("files", "manifests record the LDA script's hash and a git commit (the commit is the HEAD at run time, before the outputs were committed)",
-       sprintf("script hash matches: %s; git_commit values: %s", all(delivered_outputs_integrity$manifest_script_hash == lda_script_hash),
-               paste(unique(delivered_outputs_integrity$manifest_git_commit), collapse = ", ")),
-       all(delivered_outputs_integrity$manifest_script_hash == lda_script_hash))
+       sprintf("script hash matches: %s; git_commit values: %s", all(saved_outputs_integrity$manifest_script_hash == lda_script_hash),
+               paste(unique(saved_outputs_integrity$manifest_git_commit), collapse = ", ")),
+       all(saved_outputs_integrity$manifest_script_hash == lda_script_hash))
 readme_consistency_checks <- bind_rows(rc)
 out_tables[["readme_consistency_checks.csv"]] <- readme_consistency_checks
 
@@ -573,7 +560,7 @@ for (tag in names(review)) {
   topic_labels <- paste("Topic", seq_len(K)); topic_levels_desc <- rev(topic_labels)
   fig_cols <- if (K <= 12) 3 else 6
 
-  # rfig1 — the ten words ranked highest by relevance (lambda = 0.6) per topic; bar = probability of the word in the topic.
+  # rfig1: the ten words ranked highest by relevance (lambda = 0.6) per topic; bar = probability of the word in the topic.
   twr <- r$words_long |> filter(ranking == "relevance", rank <= 10) |> arrange(topic, rank) |>
     mutate(topic_label = factor(paste("Topic", topic), levels = topic_labels), key = paste0(term, "  #", topic)) |>
     mutate(key = factor(key, levels = rev(unique(key))))
@@ -588,7 +575,7 @@ for (tag in names(review)) {
   ggsave(file.path(fig_dir, sprintf("rfig1_top_words_by_relevance_%s.png", tag)), rfig1,
          width = 2.6 * fig_cols + 1, height = 2.2 * ceiling(K / fig_cols) + 1, dpi = 130, bg = "white", limitsize = FALSE)
 
-  # rfig2 — cross-seed cosine of every retained topic against its matched seed-2 and seed-3 topic, ordered by the weaker match.
+  # rfig2: cross-seed cosine of every retained topic against its matched seed-2 and seed-3 topic, ordered by the weaker match.
   stab_long <- r$stability |> select(topic, rank_by_min_cosine, cosine_seed2, cosine_seed3) |>
     pivot_longer(c(cosine_seed2, cosine_seed3), names_to = "seed", values_to = "cosine") |>
     mutate(seed = sub("cosine_seed", "", seed), topic_label = factor(paste("Topic", topic), levels = rev(paste("Topic", r$stability$topic))))
@@ -602,7 +589,7 @@ for (tag in names(review)) {
     theme_fig + theme(legend.position = "bottom", panel.grid.major.y = element_blank())
   ggsave(file.path(fig_dir, sprintf("rfig2_cross_seed_cosine_%s.png", tag)), rfig2, width = 8, height = 3 + 0.22 * K, dpi = 150, bg = "white", limitsize = FALSE)
 
-  # rfig3 — daily share of every topic on one fixed scale, panels ordered by peak-to-median ratio.
+  # rfig3: daily share of every topic on one fixed scale, panels ordered by peak-to-median ratio.
   order_topics <- r$time_structure$topic
   pdf_ <- r$pd |> mutate(topic_label = factor(paste("Topic", topic), levels = paste("Topic", order_topics)))
   rfig3 <- ggplot(pdf_, aes(x = created_date_utc, y = token_share)) +
@@ -616,7 +603,7 @@ for (tag in names(review)) {
   ggsave(file.path(fig_dir, sprintf("rfig3_daily_share_by_topic_%s.png", tag)), rfig3,
          width = 2.4 * fig_cols + 1, height = 1.7 * ceiling(K / fig_cols) + 1.2, dpi = 130, bg = "white", limitsize = FALSE)
 
-  # rfig4 — narrowness: share of a topic's dominant documents (>= 10 tokens) whose normalised text recurs, and the top author's share.
+  # rfig4: narrowness: share of a topic's dominant documents (>= 10 tokens) whose normalised text recurs, and the top author's share.
   nar_long <- r$narrowness |>
     select(topic, `Documents whose normalised text recurs within the topic` = share_docs_with_repeated_norm_text,
            `Documents by the topic's most frequent author` = top_author_share_ge10_tokens) |>
@@ -632,7 +619,7 @@ for (tag in names(review)) {
     theme_fig + theme(legend.position = "bottom", legend.direction = "vertical", panel.grid.major.y = element_blank())
   ggsave(file.path(fig_dir, sprintf("rfig4_topic_narrowness_%s.png", tag)), rfig4, width = 9, height = 3.5 + 0.22 * K, dpi = 150, bg = "white", limitsize = FALSE)
 
-  # rfig5 — tracked words removed by the SMART list, per 100 letter tokens of the documents each topic dominates.
+  # rfig5: tracked words removed by the SMART list, per 100 letter tokens of the documents each topic dominates.
   sw <- r$stopword_use |> filter(word %in% c("right", "new", "us")) |>
     mutate(word = factor(word, levels = c("right", "new", "us")), topic_label = factor(paste("Topic", topic), levels = topic_levels_desc))
   rfig5 <- ggplot(sw, aes(x = per_100_letter_tokens, y = topic_label, fill = word)) +
@@ -649,7 +636,7 @@ for (tag in names(review)) {
 review_checks <- bind_rows(checks)
 print(as.data.frame(review_checks[, c("group", "check", "pass")]), right = FALSE)
 out_tables[["review_checks.csv"]] <- review_checks
-out_tables[["delivered_outputs_integrity.csv"]] <- delivered_outputs_integrity
+out_tables[["saved_outputs_integrity.csv"]] <- saved_outputs_integrity
 run_end <- Sys.time()
 out_tables[["review_run_info.csv"]] <- tibble(item = c("run_start_utc", "run_end_utc", "total_seconds", "R_version", "review_seed", "git_commit"),
                                               value = c(format(run_start, "%Y-%m-%dT%H:%M:%SZ", tz = "UTC"), format(run_end, "%Y-%m-%dT%H:%M:%SZ", tz = "UTC"),
@@ -672,9 +659,9 @@ input_files <- c(
   list(list(path = lda_script_path, hash = lda_script_hash, format = "r-script"),
        list(path = file.path(lda_dir, "README.md"), hash = sha256(file.path(lda_dir, "README.md")), format = "markdown")))
 manifest_parameters <- list(
-  purpose = "read-only review of the retained Phase 1A LDA models; no model fitted, no delivered file altered",
+  purpose = "read-only review of the retained Phase 1A LDA models; no model fitted, no existing file altered",
   retained_k = paste(retained_k, collapse = ", "),
-  rule_a = sprintf("per topic the %d documents with the highest topic share among modeled documents with >= %d modeled tokens, one per distinct stored text and per distinct author, ties by doc_key (delivered rule extended from 5)", n_top_share, rep_min_tokens),
+  rule_a = sprintf("per topic the %d documents with the highest topic share among modeled documents with >= %d modeled tokens, one per distinct stored text and per distinct author, ties by doc_key (original rule extended from 5)", n_top_share, rep_min_tokens),
   rule_c = sprintf("per topic %d documents drawn at random (seed %d) from modeled documents whose dominant topic is the topic with share >= %.1f and %d-%d modeled tokens, one per distinct normalised text and per distinct author", n_typical, review_seed, typical_min_share, typical_min_tokens, typical_max_tokens),
   normalised_text = "lower case, U+2019 -> ', URLs removed, every run of non-letters collapsed to one space, trimmed",
   narrowness = sprintf("over documents whose dominant topic is the topic with >= %d modeled tokens; plus the %d highest-share documents (>= %d tokens)", narrow_min_tokens, n_top_narrow, rep_min_tokens),
@@ -693,7 +680,7 @@ write_sidecar <- function(output) {
                             os = paste(Sys.info()[["sysname"]], Sys.info()[["release"]]))
   manifest$seed      <- review_seed
   manifest$timestamp <- format(Sys.time(), "%Y-%m-%dT%H:%M:%SZ", tz = "UTC")
-  manifest$notes     <- "Review-only output: derived from the delivered Phase 1A LDA tables (read-only) and the source Parquet text (read-only, for display and whole-word counts). Nothing was refitted."
+  manifest$notes     <- "Review-only output: derived from the saved Phase 1A LDA tables (read-only) and the source Parquet text (read-only, for display and whole-word counts). Nothing was refitted."
   write_yaml(manifest, paste0(output, ".manifest.yml"))
 }
 invisible(lapply(list.files(tab_dir, pattern = "\\.csv$", full.names = TRUE), write_sidecar))

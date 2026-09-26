@@ -1,26 +1,11 @@
 #!/usr/bin/env python3
-"""
-Phase 3 sensitivity / stability test on the EXISTING three-day development
-embeddings (101,722 x 1024, float32, L2-normalized). Development/tuning run.
+"""Sensitivity and stability of UMAP + HDBSCAN on the three-day embeddings (101,722 x 1024).
 
-One-factor-at-a-time UMAP + HDBSCAN sweep, reusing the existing RAPIDS/cuML
-Phase 3 GPU implementation and its unseeded behavior (no random_state):
-
-  A. Baseline repeatability : B0..B4   -- full baseline UMAP+HDBSCAN, 5x
-  B. UMAP sensitivity       : U_*      -- one UMAP setting changed, own UMAP + baseline HDBSCAN
-  C. HDBSCAN sensitivity    : H_*      -- HDBSCAN setting changed, run on B0's 5-D UMAP coords
-
-Baseline:
-  UMAP    n_neighbors=15 n_components=5 min_dist=0.0 metric=cosine
-  HDBSCAN min_cluster_size=10 min_samples=10 metric=euclidean cluster_selection_method=eom
-
-Stability reference = B0. Raw HDBSCAN label -1 preserved as unassigned throughout.
-No document is removed, deduplicated, sampled, or excluded. Embeddings are NOT
-re-computed. No cluster interpretation. cluster_persistence_ is deliberately NOT
-used as a stability measure (it was 1.0 for every cluster in prior runs).
-
-Outputs (results/, results/umap/, figures/) are analytical results + figures only:
-no manifests, README, prose report, repo validation, or commit are produced here.
+One factor at a time, unseeded: B0..B4 repeat the baseline, U_* change one UMAP setting,
+H_* change one HDBSCAN setting on B0's 5-D coordinates. B0 is the stability reference; label -1
+stays unassigned. Baseline: UMAP n_neighbors=15 n_components=5 min_dist=0.0 cosine;
+HDBSCAN min_cluster_size=10 min_samples=10 euclidean eom.
+Outputs: results/, results/umap/ and figures/ (no manifests or report).
 """
 
 from __future__ import annotations
@@ -674,7 +659,7 @@ def main():
                 ari_mat[i, j] = ari_mat[j, i] = v
 
     # =====================================================================
-    # SAVE DERIVED DATA
+    # Save derived data
     # =====================================================================
     # 1. long-form assignment table
     n_runs = len(ok_runs)
@@ -910,7 +895,7 @@ def main():
     )
 
     # =====================================================================
-    # FIGURES
+    # Figures
     # =====================================================================
     fig1_baseline_heatmap(
         os.path.join(args.figures_dir, "fig1_baseline_ari_heatmap.png"),
@@ -945,7 +930,7 @@ def main():
     )
 
     # =====================================================================
-    # HEADLINE SUMMARY (analytical results, machine-readable)
+    # Headline summary (analytical results, machine-readable)
     # =====================================================================
     # largest / smallest deviation among tested-change runs (U_* and H_*)
     change_runs = [r for r in non_b0 if r.startswith(("U_", "H_"))]

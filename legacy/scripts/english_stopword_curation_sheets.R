@@ -1,15 +1,9 @@
-# English stopword lists: manual-curation spreadsheets for the primary raw named-list consensus tiers
-#
-# Reads, read-only, three delivered tables of english_stopword_lists.R under
-# r_analysis_outputs/stopword_lists/tables/ (master_membership.csv, list_summary.csv,
-# tier_summary.csv) and writes three .xlsx curation workbooks under
-# r_analysis_outputs/stopword_lists/curation/, one per cumulative primary tier
-# (155 / 310 / 627 entries). Rows are ordered by the raw number of included named lists
-# containing the entry (descending), then by the entry (ascending, C locale); every one of
-# the 45 included named lists keeps its own 1/0 membership column; decision and notes are
-# blank. Nothing under tables/, lists/, raw/ or figures/ is modified; no list is
-# re-acquired; no audit, provenance, lineage, Jaccard or topic-model step is run; no
-# keep/remove decision or recommendation is made; the Reddit corpus is not read.
+# Builds manual-curation workbooks for the primary named-list consensus stopword tiers.
+# Inputs: master_membership.csv, list_summary.csv and tier_summary.csv from english_stopword_lists.R
+# (r_analysis_outputs/stopword_lists/tables/). Outputs: one .xlsx per cumulative tier (155 / 310 / 627
+# entries) in r_analysis_outputs/stopword_lists/curation/, rows sorted by list count then word, with a
+# 1/0 column per included list and blank decision and notes columns. Source tables are not modified.
+# Env: KC_REPO_ROOT (project root), STOPWORD_CURATION_OVERWRITE=1 to replace existing workbooks.
 
 # ---- Setup ----
 suppressPackageStartupMessages({
@@ -20,7 +14,7 @@ invisible(Sys.setlocale("LC_COLLATE", "C"))   # reproducible string ordering (sa
 log_line  <- function(...) cat(format(Sys.time(), "%H:%M:%S"), ..., "\n")
 
 project_dir <- Sys.getenv("KC_REPO_ROOT", unset = getwd())
-src_dir     <- file.path(project_dir, "r_analysis_outputs/stopword_lists")   # delivered analysis (read-only)
+src_dir     <- file.path(project_dir, "r_analysis_outputs/stopword_lists")   # earlier analysis output (read-only)
 src_tab     <- file.path(src_dir, "tables")
 out_dir     <- file.path(src_dir, "curation")
 script_path <- file.path(project_dir, "english_stopword_curation_sheets.R")
@@ -40,8 +34,8 @@ checks <- list()
 add_check <- function(file, check, measured, pass) checks[[length(checks) + 1L]] <<- tibble(file = file, check = check, measured = as.character(measured), pass = isTRUE(pass))
 radix_sorted <- function(n_lists, words) identical(order(-n_lists, words, method = "radix"), seq_along(words))   # C-locale byte order
 
-# ---- Inputs (delivered tables, read-only) ----
-log_line("reading delivered tables")
+# ---- Inputs (existing tables, read-only) ----
+log_line("reading tables")
 master <- read_csv(file.path(src_tab, "master_membership.csv"), show_col_types = FALSE, progress = FALSE,
                    col_types = cols(.default = col_integer(), entry = col_character(), entry_class = col_character(), families_any = col_character(), families_all = col_character()))
 list_summary <- read_csv(file.path(src_tab, "list_summary.csv"), show_col_types = FALSE, progress = FALSE, col_types = cols(.default = col_character()))
@@ -49,24 +43,24 @@ tier_summary <- read_csv(file.path(src_tab, "tier_summary.csv"), show_col_types 
                          col_types = cols(.default = col_character(), tier = col_integer(), threshold = col_integer(), cumulative_size = col_integer(), size_ratio_to_tier1 = col_double()))
 input_dims <- list(master_membership = dim(master), list_summary = dim(list_summary), tier_summary = dim(tier_summary))
 
-# Included named lists (32 included + 13 included_provisional) and their membership columns, in the delivered column order.
+# Included named lists (32 included + 13 included_provisional) and their membership columns, in the original column order.
 included_ids    <- list_summary$list_id[list_summary$kind == "named" & list_summary$inclusion_status %in% c("included", "included_provisional")]
 membership_cols <- grep("^in_", names(master), value = TRUE)
 stopifnot(length(included_ids) == 45L, setequal(membership_cols, paste0("in_", included_ids)), !anyDuplicated(master$entry))
 stopifnot(all(as.matrix(master[membership_cols]) %in% membership_indicator), identical(rowSums(master[membership_cols]), as.numeric(master$n_lists)))
 
-# Primary raw named-list consensus tiers, exactly as delivered (tier_primary in master_membership.csv; thresholds in tier_summary.csv).
+# Primary raw named-list consensus tiers, as in the original run (tier_primary in master_membership.csv; thresholds in tier_summary.csv).
 primary <- tier_summary %>% filter(ordering == "primary (n_lists)") %>% arrange(tier)
 stopifnot(identical(primary$tier, 1:3), identical(primary$cumulative_size, expected_tier_sizes))
 for (k in 1:3) stopifnot(identical(which(!is.na(master$tier_primary) & master$tier_primary <= k), which(master$n_lists >= primary$threshold[k])))
 
 # ---- Curation table: rank, word, number_of_lists, one column per included named list, blank decision and notes ----
-base <- master %>% transmute(word = entry, number_of_lists = n_lists, across(all_of(membership_cols)), tier_primary, delivered_rank = rank)
+base <- master %>% transmute(word = entry, number_of_lists = n_lists, across(all_of(membership_cols)), tier_primary, saved_rank = rank)
 base <- base[order(-base$number_of_lists, base$word, method = "radix"), ]
 tier_tables <- lapply(1:3, function(k) {
   base %>% filter(!is.na(tier_primary), tier_primary <= k) %>%
     mutate(rank = row_number(), decision = NA_character_, notes = NA_character_) %>%
-    select(rank, word, number_of_lists, all_of(membership_cols), decision, notes, delivered_rank)
+    select(rank, word, number_of_lists, all_of(membership_cols), decision, notes, saved_rank)
 })
 tier_files <- tibble(tier = 1:3,
                      file  = sprintf("stopword_curation_tier%d%s_%d_words.xlsx", 1:3, c("", "_cumulative", "_cumulative"), expected_tier_sizes),
@@ -75,7 +69,7 @@ tier_files <- tibble(tier = 1:3,
 tier_files$path <- file.path(out_dir, tier_files$file)
 if (!overwrite && any(file.exists(tier_files$path))) {
   stop("Curation workbook(s) already exist under ", out_dir, " and may hold the curator's decisions. ",
-       "Set STOPWORD_CURATION_OVERWRITE=1 to regenerate them from the delivered tables.")
+       "Set STOPWORD_CURATION_OVERWRITE=1 to regenerate them from the saved tables.")
 }
 
 # ---- Workbooks ----
@@ -142,7 +136,7 @@ write_curation_workbook <- function(df, path, sheet) {
   header_plain <- createStyle(textDecoration = "bold", wrapText = TRUE, valign = "bottom", halign = "left", border = "bottom")
   header_rot   <- createStyle(textDecoration = "bold", textRotation = 90, valign = "bottom", halign = "center", border = "bottom")
   body_center  <- createStyle(halign = "center")
-  wb <- createWorkbook(creator = "english_stopword_curation_sheets.R")   # fixed creator: no user name in docProps
+  wb <- createWorkbook(creator = "english_stopword_curation_sheets.R")   # fixed creator: no personal name in docProps
   addWorksheet(wb, sheet)
   writeData(wb, sheet, df, startRow = 1, startCol = 1, withFilter = TRUE, headerStyle = header_plain, keepNA = FALSE)   # NA -> blank cell
   addStyle(wb, sheet, header_rot, rows = 1, cols = member_idx, gridExpand = TRUE)
@@ -156,7 +150,7 @@ write_curation_workbook <- function(df, path, sheet) {
   strip_dangling_parts(path)
 }
 for (k in 1:3) {
-  df <- tier_tables[[k]] %>% select(-delivered_rank)
+  df <- tier_tables[[k]] %>% select(-saved_rank)
   log_line(sprintf("writing %s (%d rows, %d columns)", tier_files$file[k], nrow(df), ncol(df)))
   write_curation_workbook(df, tier_files$path[k], tier_files$sheet[k])
   tier_files$rows[k] <- nrow(df); tier_files$cols[k] <- ncol(df)
@@ -176,7 +170,7 @@ read_back <- lapply(1:3, function(k) {
   add_check(f, "number_of_lists never increases down the rows", paste(range(x$number_of_lists), collapse = "-"), !is.unsorted(rev(x$number_of_lists)))
   add_check(f, "words alphabetically ascending (C locale) within every tied number_of_lists group; no duplicate word", n, radix_sorted(x$number_of_lists, x$word) && !anyDuplicated(x$word))
   add_check(f, "rank equals the row position 1..n", n, identical(as.integer(x$rank), seq_len(n)))
-  add_check(f, "rank equals the delivered master_membership.csv rank for the same word", n, identical(as.integer(x$rank), tier_tables[[k]]$delivered_rank[match(x$word, tier_tables[[k]]$word)]))
+  add_check(f, "rank equals the saved master_membership.csv rank for the same word", n, identical(as.integer(x$rank), tier_tables[[k]]$saved_rank[match(x$word, tier_tables[[k]]$word)]))
   add_check(f, "membership rule: rows are exactly the entries with n_lists >= primary threshold", primary$threshold[k], setequal(x$word, master$entry[master$n_lists >= primary$threshold[k]]))
   add_check(f, "every included named stopword list has its own membership column", length(membership_cols), setequal(grep("^in_", names(x), value = TRUE), paste0("in_", included_ids)) && length(included_ids) == 45L)
   add_check(f, "membership values are 1/0 and agree with master_membership.csv for every word and list", n * length(membership_cols),
@@ -208,7 +202,7 @@ manifest_parameters <- list(
   purpose = "manual stopword curation workbooks: one per cumulative primary raw named-list consensus tier; rows ranked by number_of_lists descending then word ascending; blank decision and notes; no keep/remove decision, no recommendation, no re-acquisition, no audit or comparison step re-run",
   tier_system = sprintf("primary raw named-list consensus (n_lists over the 45 included named lists, copies counted): tier 1 n_lists >= %d (%d entries); tier 2 cumulative n_lists >= %d (%d); tier 3 cumulative n_lists >= %d (%d); the family-aware 127 / 253 / 454 tiers are not used",
                         primary$threshold[1], expected_tier_sizes[1], primary$threshold[2], expected_tier_sizes[2], primary$threshold[3], expected_tier_sizes[3]),
-  row_order = "number_of_lists descending, then word ascending in C-locale byte order (order(method = 'radix')); rank = row position, identical to the delivered master_membership.csv rank",
+  row_order = "number_of_lists descending, then word ascending in C-locale byte order (order(method = 'radix')); rank = row position, identical to the saved master_membership.csv rank",
   included_lists = paste(included_ids, collapse = ", "),
   membership_indicator = "1 = the list contains the word, 0 = it does not; one in_<list_id> column per included named list, in the column order of master_membership.csv",
   workbook_layout = sprintf("one sheet; header row and columns A:C (rank, word, number_of_lists) frozen at D2; autofilter on the header row; column widths rank %g, word %g, number_of_lists %g, membership %g (headers rotated 90 degrees, header row %d points), decision %g, notes %g",
@@ -227,7 +221,7 @@ write_sidecar <- function(k) {
                    software = list(language = "R", language_version = paste(R.version$major, R.version$minor, sep = "."), packages = package_versions, os = paste(Sys.info()[["sysname"]], Sys.info()[["release"]])),
                    schema_diff = schema_diff,
                    timestamp = format(Sys.time(), "%Y-%m-%dT%H:%M:%SZ", tz = "UTC"),
-                   notes = "Derived read-only from the delivered master_membership.csv, list_summary.csv and tier_summary.csv (hashed above): a projection of the master membership table onto rank, word, number_of_lists and the 45 membership columns, restricted to the delivered primary tier, with blank decision and notes columns for manual curation. Every check in the generating script passed on the written file.")
+                   notes = "Derived read-only from the existing master_membership.csv, list_summary.csv and tier_summary.csv (hashed above): a projection of the master membership table onto rank, word, number_of_lists and the 45 membership columns, restricted to the original primary tier, with blank decision and notes columns for manual curation. Every check in the generating script passed on the written file.")
   write_yaml(manifest, paste0(output, ".manifest.yml"))
 }
 invisible(lapply(1:3, write_sidecar))

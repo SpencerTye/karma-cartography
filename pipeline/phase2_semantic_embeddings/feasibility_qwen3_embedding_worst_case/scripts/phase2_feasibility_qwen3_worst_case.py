@@ -1,19 +1,15 @@
 #!/usr/bin/env python
-"""Phase 2 feasibility test: Qwen3-Embedding-4B and Qwen3-Embedding-8B on the worst-case documents.
+"""Feasibility test of Qwen3-Embedding-4B and 8B on the longest documents of the corpus.
 
-Measures, on the local GPU under a total-VRAM ceiling, the exact Qwen3-Embedding token length of
-every canonical document and the actual VRAM, RAM and wall-clock cost of embedding the longest one,
-three and eight documents in single batched forward passes with each model (BF16, unquantised, no
-truncation). Nothing is extrapolated; every reported number is measured.
+Counts the tokens of every canonical Phase 1 document, then measures VRAM, RAM and wall-clock time
+for embedding the longest one, three and eight documents in single batches (BF16, no truncation)
+under a total-VRAM ceiling. Outputs: results tables, environment record and REPORT.md.
 
-Stages (run inside the WSL2 venv; see ../README.md):
-  tokens          verify the canonical table, prove tokenizer identity, count the tokens of every document
-  bench --model   load one model, run Cases A, B, C (and the supplementary default-cache Case A), measure
-  report          assemble the results tables, the environment record and REPORT.md
-  all             tokens, then bench for 4B and for 8B in separate processes, then report
-
-Layout: pure functions first (unit-tested by ../tests/test_phase2_feasibility_functions.py), then the
-runtime helpers, then the stages.
+Stages (run in the WSL2 venv; see ../README.md):
+  tokens          verify the table, check tokenizer identity, count tokens of every document
+  bench --model   load one model and run Cases A, B, C (plus the default-cache Case A)
+  report          results tables, environment record and REPORT.md
+  all             tokens, bench for 4B and 8B in separate processes, report
 """
 
 from __future__ import annotations

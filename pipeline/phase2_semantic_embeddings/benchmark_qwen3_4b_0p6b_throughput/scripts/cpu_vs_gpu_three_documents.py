@@ -1,28 +1,14 @@
 #!/usr/bin/env python
-"""Phase 2 benchmark, corrected: CPU versus GPU on the same three documents.
+"""CPU vs GPU embedding speed for Qwen3-Embedding-0.6B and 4B on the same three documents.
 
-Compares four conditions directly: Qwen3-Embedding-0.6B on the CPU, 0.6B on the GPU (RTX 3090),
-Qwen3-Embedding-4B on the CPU and 4B on the GPU. Every condition embeds the same three real
-Reddit documents, in the same order, in every batch: the three documents of Case B of the Phase 2
-worst-case feasibility test (`feasibility_qwen3_embedding_worst_case/results/cases_4B.csv`). Each
-condition loads its model once, runs untimed warm-up batches, then timed batches, all of the same
-three documents.
+Inputs: the three Case B documents from feasibility_qwen3_embedding_worst_case/results/cases_4B.csv.
+Each condition (model x device) loads once, runs warm-up batches, then timed batches; same code
+path for all, CPU float32 and GPU bfloat16, inside a 21 GiB systemd scope with a GPU memory watchdog.
+Outputs: per-condition results, speed ratios, precision agreement and CPU_VS_GPU_REPORT.md.
 
-All four conditions run the same code (transformers + PyTorch, `AutoModel`, sdpa attention with
-keys and values repeated to the query heads, `use_cache=False`, left padding, the model card's
-last-token pooling, L2 normalisation, no truncation, no prompt); only the device and the numeric
-precision differ (CPU float32, GPU bfloat16, both recorded). Every worker runs in the same kind of
-systemd scope (21 GiB memory limit, no swap, 8 threads, one batch at a time). GPU runs keep the
-21 GiB ceiling on the total memory of the card (other processes included): PyTorch's allocator is
-capped at the ceiling minus the device total after the CUDA context exists, and a 20 ms NVML
-watchdog kills the worker if the device total goes over the ceiling.
-
-Nothing is extrapolated; no batch-size search, no memory-limit search, no full-corpus embedding.
-
-Stages (run inside the WSL2 venv; see ../README.md):
+Stages (run in the WSL2 venv; see ../README.md):
   run --model M --device D   one condition (M = 0.6B or 4B, D = cpu or gpu)
-  report                     the comparison table, the speed ratios, the precision agreement and
-                             CPU_VS_GPU_REPORT.md from the four runs
+  report                     comparison table and report from the four runs
   worker                     internal: the process started by run inside the scope
 """
 

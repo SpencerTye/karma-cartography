@@ -1,12 +1,7 @@
-"""Generate x86-64 jump trampolines for every exported function of the real libcuda.so.1 that the
-vram_cap shim does not intercept itself.
+"""Generate x86-64 jump trampolines for every export of the real libcuda.so.1 that vram_cap.c
+does not intercept. Intercepted names are parsed from vram_cap.c, so the two stay in sync.
 
 Usage: gen_trampolines.py <exports.txt> <vram_cap.c> <out.S> <out.h>
-
-<exports.txt> holds one exported function name per line (from `nm -D --defined-only`). The names
-of the functions that vram_cap.c defines itself are parsed from its source (lines that start with
-`CUresult <name>(`), so the two files cannot drift apart: a name defined in C never gets a
-trampoline, and every other export of the real library gets one.
 """
 
 import re

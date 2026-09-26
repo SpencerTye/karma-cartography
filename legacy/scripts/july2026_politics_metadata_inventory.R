@@ -1,42 +1,12 @@
-# July 2026 r/politics sample - metadata inventory to support later STM design
-#
-# Purpose: an auditable inventory of the metadata fields available in the source
-# Parquet sample (comments and submissions), their observed characteristics, and
-# which of them can be attached to the exact documents that were modelable under
-# the delivered Tier 2 LDA representation (r_analysis_outputs/lda_topics_tier2/;
-# the K = 40 promotion in lda_topics_tier2_k40_k80/ shares the same document set).
-# No topic model is fitted, no covariate is chosen, and nothing is filtered,
-# recoded, aggregated away or removed: every measurement runs over all records and
-# the tables carry the counts from which such decisions can be taken.
-#
-# What is measured, in order:
-#   1. the source files: Parquet footer facts, declared schemas, SHA256 hashes and
-#      the ingest manifest sidecars (manifest.jsonl);
-#   2. every field of both record types: declared type and R class, missing, empty,
-#      distinct, value counts (low cardinality) or top values and examples (high
-#      cardinality), numeric quantiles, timestamp coverage, text length;
-#   3. identifier structure and the within-sample linkage the existing scripts use
-#      (link_id -> submission id; parent_id prefixes);
-#   4. the Tier 2 linkage artifacts (the delivered document-topic tables and the
-#      cached theta objects): integrity against their manifests, then the link of
-#      every Tier 2 document back to its source record by the established doc_key
-#      ('t1_' + comment id, 't3_' + submission id) with field-by-field agreement;
-#   5. coverage of every field over the Tier 2 modelable documents, separately for
-#      comments and submissions and against the full source corpus; the fields that
-#      exist only in the Tier 2 tables; the fields reachable through the established
-#      joins (submission record via link_id, parent comment via parent_id);
-#   6. reconciliation against the counts documented in the existing project
-#      artifacts; discrepancies are reported, never repaired.
-# The source Parquet files and every delivered artifact are read-only. All outputs
-# go under r_analysis_outputs/metadata_inventory/ (this script owns that folder and
-# clears its tables/ and figures/ at the start of each run). Run top to bottom with
-# Rscript; no environment variables are read.
+# Metadata inventory of the July 2026 r/politics sample, for planning an STM.
+# Input: the source Parquet files and the Tier 2 LDA tables and theta caches
+# (r_analysis_outputs/lda_topics_tier2/ and lda_topics_tier2_k40_k80/).
+# Measures every source field, links each Tier 2 document back to its source
+# record, reports field coverage over the modelable documents, and reconciles
+# counts with earlier reports. Nothing is filtered or fitted.
+# Output: tables and figures under r_analysis_outputs/metadata_inventory/ (cleared each run).
 
 # ---- Setup: packages, paths, parameters, output directories ----
-# INPUT : none.
-# DOES  : load packages; define the source paths, the delivered artifacts read, and
-#         every inventory parameter; create and clear the output folders.
-# OUTPUT: parameter objects; figures/ and tables/ directories.
 suppressPackageStartupMessages({
   library(nanoparquet); library(dplyr); library(tidyr); library(stringi); library(readr)
   library(ggplot2); library(scales); library(patchwork); library(digest); library(yaml); library(jsonlite)
@@ -67,10 +37,9 @@ dir.create(fig_dir, recursive = TRUE, showWarnings = FALSE)
 dir.create(tab_dir, recursive = TRUE, showWarnings = FALSE)
 invisible(file.remove(list.files(c(fig_dir, tab_dir), pattern = "\\.(csv|png|yml)$", full.names = TRUE)))
 
-# Delivered Tier 2 artifacts read here (all read-only). The two document tables and the
-# theta objects are git-ignored regenerable files; the script records their absence
-# rather than failing when a cross-check file is missing. The K = 80 document table
-# is the linkage artifact this inventory is about and is required.
+# Tier 2 files read here. The document tables and theta caches are git-ignored and
+# regenerable, so a missing cross-check file is recorded rather than fatal. The
+# K = 80 document table is required.
 artifact_paths <- c(
   document_table_K080           = file.path(tier2_dir, "tables/document_topic_distribution_K080.csv"),
   document_table_K040           = file.path(k40_dir,   "tables/document_topic_distribution_K040.csv"),
@@ -102,12 +71,8 @@ sha256 <- function(path) paste0("sha256:", digest(path, algo = "sha256", file = 
 log_line("start:", length(comment_files), "comment files,", length(submission_files), "submission files")
 
 # ---- Source files: footer metadata, declared schemas, hashes, ingest sidecars ----
-# INPUT : the 8 Parquet files and the 2 manifest.jsonl sidecars (read-only).
-# DOES  : read footer facts (rows, columns, row groups, writer) and the declared
-#         schema of every file without reading data; hash every file; parse the
-#         ingest manifests so their row counts, byte sizes and time ranges can be
-#         compared with what the files contain.
-# OUTPUT: source_files; schema_by_file; source_manifest.
+# Footer facts and declared schema of each file (no data read), file hashes, and
+# the ingest manifests for comparison with the file contents.
 list_to_chr <- function(x) vapply(x, function(v) if (is.null(v) || length(v) == 0L) NA_character_ else paste(unlist(v), collapse = " "), character(1))
 parquet_schema_table <- function(path, record_type) {
   s <- as.data.frame(read_parquet_schema(path))
@@ -144,11 +109,8 @@ source_manifest <- bind_rows(lapply(source_manifest_files, function(f) {
 mark_stage("source_files")
 
 # ---- Read source data ----
-# INPUT : the 8 Parquet files.
-# DOES  : read every file with nanoparquet (all columns, all rows) and stack per
-#         record type; tag each row with its file (a helper column for the per-file
-#         checks, not a source field). Nothing is cast, trimmed or dropped.
-# OUTPUT: comments; submissions; rows_per_file.
+# All columns and rows, stacked per record type. Each row is tagged with its file
+# for the per-file checks.
 read_type <- function(files) bind_rows(lapply(files, function(f) { x <- as_tibble(as.data.frame(read_parquet(f))); x$source_file <- basename(f); x }))
 comments    <- read_type(comment_files)
 submissions <- read_type(submission_files)
@@ -169,13 +131,8 @@ mark_stage("read")
 log_line("read:", nrow(comments), "comments,", nrow(submissions), "submissions")
 
 # ---- Helper functions for the field measurements ----
-# INPUT : a vector of values, its population label, record type and field name.
-# DOES  : the per-field measurements: missing / empty / usable / distinct / marker
-#         counts; numeric quantiles and special values; UTC coverage of epoch fields;
-#         text length and repetition; value listings (all values when the field has at
-#         most low_cardinality_max distinct values, else the most frequent) and
-#         first-in-source-order examples. Displayed values are cut to example_max_chars.
-# OUTPUT: functions used by the inventory sections below.
+# Per-field counts (missing, empty, usable, distinct, marker), numeric quantiles,
+# UTC coverage of epoch fields, text length, value listings and examples.
 safe_stat <- function(f, x, ...) if (length(x)) f(x, ...) else NA_real_
 truncate_chr <- function(x, n = example_max_chars) {
   x <- stri_replace_all_regex(x, "[\\r\\n\\t]+", " ")
@@ -294,14 +251,8 @@ inventory_for <- function(df, fields, record_type, population, origin) {
 }
 
 # ---- Source field inventory (questions 1 to 3) ----
-# INPUT : comments; submissions; schema_by_file.
-# DOES  : run the field measurements over every source field of both record types
-#         (population "source (all records)"); attach the declared Parquet types; record
-#         whether each field exists for comments, submissions or both; check that the
-#         seven comment files declare identical schemas.
-# OUTPUT: field_inventory, field_numeric_summary, field_datetime_summary,
-#         field_character_summary, field_value_counts, field_value_examples (source part);
-#         source_schema; comment_schemas_identical.
+# Measure every source field of both record types, attach declared Parquet types,
+# and check that the seven comment files share one schema.
 pop_source <- "source (all records)"
 inv_c <- inventory_for(comments,    source_fields$comment,    "comment",    pop_source, "source Parquet: comments")
 inv_s <- inventory_for(submissions, source_fields$submission, "submission", pop_source, "source Parquet: submissions")
@@ -327,14 +278,8 @@ mark_stage("source_inventory")
 log_line("source inventory:", nrow(field_inventory_source), "field rows")
 
 # ---- Identifier structure and within-sample linkage of the source records ----
-# INPUT : comments; submissions.
-# DOES  : measure the identifier fields as stored: patterns (bare base36 ids; 't1_' /
-#         't3_' / 't5_' prefixes), lengths, uniqueness, overlap of the two id spaces,
-#         and the within-sample references: link_id -> submission id (the convention
-#         verified by sample_analysis.md and used by the Tier 2 script), parent_id ->
-#         comment id or submission id. Helper columns (thread_id, parent kind / bare id)
-#         are derived here for the joins below and are not source fields.
-# OUTPUT: identifier_structure; thread_linkage_source; helper columns on comments.
+# Identifier patterns, lengths and uniqueness, plus the link_id -> submission and
+# parent_id -> comment/submission references. Helper columns for later joins are added here.
 thread_id_of <- function(link_id) substr(link_id, 4L, nchar(link_id))                # the Tier 2 script's rule (line 179)
 comments <- comments |>
   mutate(thread_id = thread_id_of(link_id),
@@ -398,16 +343,8 @@ thread_linkage_source <- tibble(
 mark_stage("identifiers")
 
 # ---- Tier 2 linkage artifacts: integrity ----
-# INPUT : artifact_paths and their .manifest.yml sidecars.
-# DOES  : hash every artifact read here and compare with the SHA256 in its delivered
-#         manifest; read the two document tables' identifier and metadata columns
-#         (the topic columns are not needed) and count their header columns; read the
-#         doc_key and split vectors of the cached theta objects; read the delivered
-#         accounting tables. Nothing under lda_topics_tier2/ or
-#         lda_topics_tier2_k40_k80/ is written.
-# OUTPUT: tier2_artifacts; t2 (the K = 80 document table's metadata columns); dt40;
-#         theta_keys; delivered_accounting; delivered_length; delivered_text_availability;
-#         representative_header.
+# Hash each Tier 2 file against its manifest; read the metadata columns of the
+# document tables, doc_key and split from the theta caches, and the accounting tables.
 manifest_field <- function(path, field) tryCatch({ v <- read_yaml(paste0(path, ".manifest.yml"))[[field]]; if (is.null(v)) NA else v }, error = function(e) NA)
 tier2_artifacts <- tibble(role = names(artifact_paths), path = unname(artifact_paths)) |>
   mutate(exists = file.exists(path), bytes = if_else(exists, file.size(path), NA_real_),
@@ -447,26 +384,17 @@ theta_keys <- lapply(c("theta_K080_seed1", "theta_K040_seed1"), function(role) {
 })
 names(theta_keys) <- c("theta_K080_seed1", "theta_K040_seed1")
 theta_keys <- theta_keys[!vapply(theta_keys, is.null, logical(1))]
-delivered_accounting <- read_csv(artifact_paths[["document_accounting"]], show_col_types = FALSE, progress = FALSE)
-delivered_length     <- read_csv(artifact_paths[["document_length_summary"]], show_col_types = FALSE, progress = FALSE)
-delivered_text_availability <- read_csv(artifact_paths[["text_availability"]], show_col_types = FALSE, progress = FALSE)
+saved_accounting <- read_csv(artifact_paths[["document_accounting"]], show_col_types = FALSE, progress = FALSE)
+saved_length     <- read_csv(artifact_paths[["document_length_summary"]], show_col_types = FALSE, progress = FALSE)
+saved_text_availability <- read_csv(artifact_paths[["text_availability"]], show_col_types = FALSE, progress = FALSE)
 representative_header <- strsplit(readLines(artifact_paths[["representative_documents_K080"]], n = 1L, encoding = "UTF-8"), ",", fixed = TRUE)[[1]]
 mark_stage("tier2_artifacts")
 log_line("Tier 2 artifacts:", nrow(t2), "document rows;", sum(tier2_artifacts$hash_equals_manifest), "of", sum(tier2_artifacts$exists), "existing files match their manifests")
 
 # ---- Link every source record to its Tier 2 document (question 4) ----
-# INPUT : comments; submissions; t2; dt40; theta_keys; delivered_accounting.
-# DOES  : form the established doc_key ('t1_' + id for comments, 't3_' + id for
-#         submissions; Tier 2 script lines 175-184) and join the Tier 2 document table
-#         onto the source records; count matches in both directions; compare every
-#         field the Tier 2 table carries with the source value (author, created_utc,
-#         link_id, parent_id, submission_id, doc_type, doc_id, created_date_utc,
-#         submission_in_sample, n_chars against the stored text); flag the modelable
-#         documents (model_status == "modeled"); compare the counts by type and split
-#         with the delivered accounting; check the K = 40 table and the cached theta
-#         objects describe the same document set.
-# OUTPUT: comments_l; submissions_l (source rows with the Tier 2 columns appended);
-#         linkage_counts; linkage_field_agreement; modelable_by_type.
+# Join on doc_key ('t1_' + comment id, 't3_' + submission id; Tier 2 script lines 175-184),
+# compare each carried field with the source value, flag modelable documents, and
+# check counts against the saved accounting and the K = 40 table.
 comments    <- comments    |> mutate(doc_key = paste0("t1_", id))
 submissions <- submissions |> mutate(doc_key = paste0("t3_", id))
 t2_pick <- t2 |> rename(t2_doc_id = doc_id, t2_doc_type = doc_type, t2_author = author, t2_created_utc = created_utc,
@@ -517,7 +445,7 @@ theta_check <- function(tk) {
 }
 linkage_counts <- bind_rows(
   tibble(item = "source records (comments + submissions)", value = as.character(n_c + n_s), note = "read from the 8 Parquet files"),
-  tibble(item = "Tier 2 document table rows (K = 80, delivered)", value = as.character(nrow(t2)), note = "document_topic_distribution_K080.csv"),
+  tibble(item = "Tier 2 document table rows (K = 80, saved)", value = as.character(nrow(t2)), note = "document_topic_distribution_K080.csv"),
   tibble(item = "Tier 2 rows with a distinct doc_key", value = as.character(n_distinct(t2$doc_key)), note = ""),
   tibble(item = "Tier 2 rows matched to exactly one source record by doc_key", value = as.character(sum(t2$doc_key %in% source_keys)), note = "doc_key = 't1_' + comment id or 't3_' + submission id"),
   tibble(item = "Tier 2 rows with no source record (unmatched)", value = as.character(sum(!t2$doc_key %in% source_keys)), note = ""),
@@ -529,10 +457,10 @@ linkage_counts <- bind_rows(
   tibble(item = "Tier 2 modelable submissions", value = as.character(n_modelable_s), note = sprintf("%.4f%% of source submissions", 100 * n_modelable_s / n_s)),
   tibble(item = "Tier 2 training split", value = as.character(sum(t2$split %in% "train")), note = ""),
   tibble(item = "Tier 2 held-out split", value = as.character(sum(t2$split %in% "held-out")), note = ""),
-  tibble(item = "delivered document_accounting.csv: modeled documents (comments / submissions / total)",
-         value = paste(delivered_accounting[delivered_accounting$stage == "modeled documents", c("comments", "submissions", "total")], collapse = " / "), note = "facts from the delivered artifact"),
-  tibble(item = "delivered document_accounting.csv: training / held-out",
-         value = paste(delivered_accounting$total[delivered_accounting$stage %in% c("modeled: training set", "modeled: held-out set")], collapse = " / "), note = "facts from the delivered artifact"),
+  tibble(item = "saved document_accounting.csv: modeled documents (comments / submissions / total)",
+         value = paste(saved_accounting[saved_accounting$stage == "modeled documents", c("comments", "submissions", "total")], collapse = " / "), note = "facts from the saved file"),
+  tibble(item = "saved document_accounting.csv: training / held-out",
+         value = paste(saved_accounting$total[saved_accounting$stage %in% c("modeled: training set", "modeled: held-out set")], collapse = " / "), note = "facts from the saved file"),
   tibble(item = "K = 80 document table header columns", value = as.character(length(dt80$header)), note = paste("non-topic columns:", paste(setdiff(dt80$header, grep("^topic_", dt80$header, value = TRUE)), collapse = " "))),
   if (!is.null(dt40)) bind_rows(
     tibble(item = "K = 40 document table header columns", value = as.character(length(dt40$header)), note = "document_topic_distribution_K040.csv (companion package)"),
@@ -546,13 +474,8 @@ mark_stage("linkage")
 log_line("linkage:", n_modelable, "modelable documents;", sum(linkage_field_agreement$n_disagree), "field disagreements")
 
 # ---- Tier 2 document-table fields ----
-# INPUT : comments_l; submissions_l (the Tier 2 columns).
-# DOES  : the same field measurements over the 18 identifier / metadata columns of
-#         the Tier 2 document table, by record type, over all documents and over the
-#         modelable documents. These columns are the Tier 2 script's outputs (carried
-#         source fields, derived fields, model outputs); their meaning is as documented
-#         in lda_topics_tier2/README.md.
-# OUTPUT: tier2 parts of the field tables.
+# The same measurements over the 18 metadata columns of the Tier 2 table, for all
+# and for modelable documents (column meanings in lda_topics_tier2/README.md).
 t2_fields <- c("doc_key", "doc_id", "doc_type", "author", "created_utc", "created_date_utc", "submission_id", "link_id", "parent_id",
                "submission_in_sample", "n_chars", "n_tokens_letters", "n_tokens_modeled", "model_status", "split",
                "dominant_topic", "dominant_topic_share", "n_active_topics")
@@ -581,12 +504,8 @@ field_value_examples    <- collect("first")
 mark_stage("tier2_fields")
 
 # ---- Field provenance: source fields, Tier 2 fields, and how each reaches a modelable document (question 4) ----
-# INPUT : source_fields; dt80$header; dt40$header; theta_keys; representative_header;
-#         the Tier 2 script's documented construction (lines 175-188, 351-360, 1030-1052).
-# DOES  : one row per field name across the source schemas and the Tier 2 artifacts:
-#         where it occurs, how the Tier 2 table derived it (from the script), and the
-#         route by which it can be attached to a modelable document.
-# OUTPUT: field_provenance.
+# One row per field: where it occurs, how the Tier 2 script derived it
+# (lines 175-188, 351-360, 1030-1052), and how it reaches a modelable document.
 t2_topic_cols80 <- grep("^topic_", dt80$header, value = TRUE)
 t2_topic_cols40 <- if (!is.null(dt40)) grep("^topic_", dt40$header, value = TRUE) else character(0)
 derivation <- c(
@@ -647,14 +566,8 @@ field_provenance <- bind_rows(
 mark_stage("provenance")
 
 # ---- Coverage over the modelable documents, and source versus modelable (questions 4 and 5) ----
-# INPUT : comments_l; submissions_l; source_fields; t2_fields.
-# DOES  : for every source field and every Tier 2 field, count the documents with a
-#         usable value (definition in usable_definition), the coverage percentage, the
-#         distinct usable values, and the missing / empty / marker counts - over all
-#         source records and over the Tier 2 modelable documents, for comments, for
-#         submissions and for both together. For the combined scope a field native to
-#         one record type is also expressed against the documents of that type.
-# OUTPUT: modelable_document_coverage; coverage_source_vs_modelable.
+# Usable-value coverage of every field over all source records and over the modelable
+# documents, by record type and combined (see usable_definition).
 coverage_rows <- function(df, fields, scope, origin, route, n_exists = NULL) {
   bind_rows(lapply(fields, function(f) {
     x <- df[[f]]; miss <- is.na(x)
@@ -694,14 +607,8 @@ coverage_t2 <- bind_rows(
 mark_stage("coverage")
 
 # ---- Join-derived attachments: submission fields via link_id, parent-comment fields via parent_id ----
-# INPUT : comments_l; submissions; comments.
-# DOES  : attach to every comment the fields of its submission (join on link_id without
-#         't3_' = submission id, the convention verified above) and of its parent
-#         comment (join on parent_id without 't1_' = comment id; a 't3_' parent is the
-#         submission itself); measure coverage over all comments and over the modelable
-#         comments, plus whether the parent comment is itself modelable. Each attached
-#         field keeps its source name with a 'submission_' or 'parent_' prefix.
-# OUTPUT: coverage_joined; parent_linkage.
+# Attach submission fields via link_id and parent-comment fields via parent_id
+# (prefixed 'submission_' / 'parent_'), then measure coverage.
 sub_attach <- submissions |> select(thread_id = id, all_of(setdiff(source_fields$submission, "id"))) |>
   rename_with(~ paste0("submission_", .x), .cols = -thread_id)
 par_attach <- comments |> select(parent_bare_id = id, all_of(setdiff(source_fields$comment, "id"))) |>
@@ -744,12 +651,8 @@ coverage_source_vs_modelable <- bind_rows(coverage_native, coverage_t2, coverage
 mark_stage("joins")
 
 # ---- Numeric distributions and daily coverage, source versus modelable ----
-# INPUT : comments_l; submissions_l.
-# DOES  : quantiles of every numeric source field (and of the derived ingestion lag
-#         retrieved_on - created_utc) over all records and over the modelable
-#         documents, by record type; records per UTC day of created_utc in both
-#         populations, by record type.
-# OUTPUT: numeric_distribution_source_vs_modelable; records_per_utc_day.
+# Quantiles of each numeric field and of ingestion lag (retrieved_on - created_utc),
+# and records per UTC day, for all records and modelable documents.
 comments_l    <- comments_l    |> mutate(ingestion_lag_seconds = retrieved_on - created_utc)
 submissions_l <- submissions_l |> mutate(ingestion_lag_seconds = retrieved_on - created_utc)
 num_c <- c(intersect(source_fields$comment, names(comments_l)[vapply(comments_l, is.numeric, logical(1))]), "ingestion_lag_seconds")
@@ -770,16 +673,8 @@ records_per_utc_day <- bind_rows(comments_l |> transmute(record_type = "comment"
 mark_stage("distributions")
 
 # ---- Reconciliation checks ----
-# INPUT : everything above; the counts documented in the existing project artifacts.
-# DOES  : structural identities of this inventory (rows read = footer rows = ingest
-#         manifest rows; schemas identical across comment files; keys unique; every
-#         Tier 2 document links to one source record and back; carried fields agree;
-#         accounting identities), integrity of the delivered artifacts against their
-#         manifests, and the recomputation of counts documented in
-#         sample_reconnaissance.md, sample_analysis.md, r_analysis_outputs/README.md and
-#         the delivered Tier 2 tables. A failed check is recorded and reported; nothing
-#         is altered to make it pass.
-# OUTPUT: reconciliation_checks; documented_value_checks; discrepancies.
+# Structural identities, Tier 2 file integrity, and counts from sample_reconnaissance.md,
+# sample_analysis.md, r_analysis_outputs/README.md and the Tier 2 tables. Failures are reported.
 checks <- list()
 add_check <- function(check, detail, pass) checks[[length(checks) + 1L]] <<- tibble(check = check, detail = detail, pass = isTRUE(pass))
 add_check("rows read equal the Parquet footer row counts for every file",
@@ -796,7 +691,7 @@ add_check("comment id and submission id are unique and never missing", sprintf("
 add_check("no source id or author equals the literal string 'NA' (so the document table's NA token is unambiguous)",
           sprintf("%d ids, %d authors equal 'NA'", sum(comments$id == "NA") + sum(submissions$id == "NA"), sum(comments$author == "NA", na.rm = TRUE) + sum(submissions$author == "NA", na.rm = TRUE)),
           sum(comments$id == "NA") + sum(submissions$id == "NA") + sum(comments$author == "NA", na.rm = TRUE) + sum(submissions$author == "NA", na.rm = TRUE) == 0)
-add_check("every delivered artifact read here matches the SHA256 in its manifest", sprintf("%d of %d existing files match", sum(tier2_artifacts$hash_equals_manifest), sum(tier2_artifacts$exists)),
+add_check("every Tier 2 file read here matches the SHA256 in its manifest", sprintf("%d of %d existing files match", sum(tier2_artifacts$hash_equals_manifest), sum(tier2_artifacts$exists)),
           all(tier2_artifacts$hash_equals_manifest[tier2_artifacts$exists]))
 add_check("the K = 80 document table has the row and column counts recorded in its manifest",
           sprintf("%d rows read, manifest %s; %d header columns, manifest %s", nrow(t2), tier2_artifacts$manifest_rows[tier2_artifacts$role == "document_table_K080"], length(dt80$header), tier2_artifacts$manifest_cols[tier2_artifacts$role == "document_table_K080"]),
@@ -806,27 +701,27 @@ add_check("every Tier 2 document links to exactly one source record by doc_key, 
           nrow(t2) == n_c + n_s && n_distinct(t2$doc_key) == nrow(t2) && all(t2$doc_key %in% source_keys) && !anyNA(comments_l$model_status) && !anyNA(submissions_l$model_status))
 add_check("every field the Tier 2 document table carries agrees with the source record for every document",
           sprintf("%d comparisons, %d disagreements", sum(linkage_field_agreement$n_compared), sum(linkage_field_agreement$n_disagree)), sum(linkage_field_agreement$n_disagree) == 0)
-add_check("modelable documents by type and split equal the delivered document_accounting.csv",
+add_check("modelable documents by type and split equal the saved document_accounting.csv",
           sprintf("measured %d / %d / %d modeled (comments / submissions / total), %d train, %d held-out", n_modelable_c, n_modelable_s, n_modelable, sum(t2$split %in% "train"), sum(t2$split %in% "held-out")),
-          n_modelable_c == delivered_accounting$comments[delivered_accounting$stage == "modeled documents"] &&
-            n_modelable_s == delivered_accounting$submissions[delivered_accounting$stage == "modeled documents"] &&
-            sum(t2$split %in% "train") == delivered_accounting$total[delivered_accounting$stage == "modeled: training set"] &&
-            sum(t2$split %in% "held-out") == delivered_accounting$total[delivered_accounting$stage == "modeled: held-out set"])
+          n_modelable_c == saved_accounting$comments[saved_accounting$stage == "modeled documents"] &&
+            n_modelable_s == saved_accounting$submissions[saved_accounting$stage == "modeled documents"] &&
+            sum(t2$split %in% "train") == saved_accounting$total[saved_accounting$stage == "modeled: training set"] &&
+            sum(t2$split %in% "held-out") == saved_accounting$total[saved_accounting$stage == "modeled: held-out set"])
 status_rows_equal <- local({
   m <- modelable_by_type |> group_by(record_type, model_status) |> summarise(n = sum(n), .groups = "drop")
-  d <- delivered_accounting |> filter(grepl("^not modeled", stage)) |>
+  d <- saved_accounting |> filter(grepl("^not modeled", stage)) |>
     mutate(stage = sub("only terms outside the vocabulary$", "only terms outside the vocabulary (document-frequency floor or ceiling)", stage))
   cell <- function(type, stage) { v <- m$n[m$record_type == type & m$model_status == stage]; if (length(v)) v else 0L }
   eq <- vapply(seq_len(nrow(d)), function(i) cell("comment", d$stage[i]) == d$comments[i] && cell("submission", d$stage[i]) == d$submissions[i], logical(1))
   list(n_equal = sum(eq), n_rows = nrow(d))
 })
-add_check("model_status counts by type equal the delivered document_accounting.csv for every not-modeled reason",
+add_check("model_status counts by type equal the saved document_accounting.csv for every not-modeled reason",
           sprintf("%d of %d reason rows equal for both record types", status_rows_equal$n_equal, status_rows_equal$n_rows),
           status_rows_equal$n_equal == status_rows_equal$n_rows)
-add_check("modeled token counts by type equal the delivered document_length_summary.csv",
+add_check("modeled token counts by type equal the saved document_length_summary.csv",
           sprintf("measured %d comment tokens, %d submission tokens", sum(mod_c$n_tokens_modeled), sum(mod_s$n_tokens_modeled)),
-          sum(mod_c$n_tokens_modeled) == delivered_length$tokens[delivered_length$doc_type == "comment"] && sum(mod_s$n_tokens_modeled) == delivered_length$tokens[delivered_length$doc_type == "submission"] &&
-            nrow(mod_c) == delivered_length$docs[delivered_length$doc_type == "comment"] && nrow(mod_s) == delivered_length$docs[delivered_length$doc_type == "submission"])
+          sum(mod_c$n_tokens_modeled) == saved_length$tokens[saved_length$doc_type == "comment"] && sum(mod_s$n_tokens_modeled) == saved_length$tokens[saved_length$doc_type == "submission"] &&
+            nrow(mod_c) == saved_length$docs[saved_length$doc_type == "comment"] && nrow(mod_s) == saved_length$docs[saved_length$doc_type == "submission"])
 if (!is.null(dt40)) add_check("the K = 40 document table describes the same document set as the K = 80 table (doc_key, model_status, split, n_tokens_modeled identical)",
                              sprintf("identical: %s / %s / %s / %s", identical(dt40$table$doc_key, t2$doc_key), identical(dt40$table$model_status, t2$model_status), identical(dt40$table$split, t2$split), identical(dt40$table$n_tokens_modeled, t2$n_tokens_modeled)),
                              identical(dt40$table$doc_key, t2$doc_key) && identical(dt40$table$model_status, t2$model_status) && identical(dt40$table$split, t2$split) && identical(dt40$table$n_tokens_modeled, t2$n_tokens_modeled))
@@ -848,7 +743,7 @@ add_check("the submission_in_sample column of the Tier 2 table equals its recomp
 reconciliation_checks <- bind_rows(checks)
 
 # Counts documented in the existing project artifacts, recomputed here.
-ta <- function(field, state) { v <- delivered_text_availability$n[delivered_text_availability$field == field & delivered_text_availability$state == state]; if (length(v)) v else NA_real_ }
+ta <- function(field, state) { v <- saved_text_availability$n[saved_text_availability$field == field & saved_text_availability$state == state]; if (length(v)) v else NA_real_ }
 documented_value_checks <- tribble(
   ~item, ~documented_value, ~documented_in, ~measured_value,
   "comment records", 891397, "sample_reconnaissance.md s1; lda_topics_tier2/tables/document_accounting.csv", n_c,
@@ -907,14 +802,8 @@ mark_stage("reconciliation")
 log_line("reconciliation:", sum(reconciliation_checks$pass), "of", nrow(reconciliation_checks), "checks pass;", sum(documented_value_checks$equal), "of", nrow(documented_value_checks), "documented values reproduced")
 
 # ---- Figures ----
-# INPUT : comments_l; submissions_l; records_per_utc_day.
-# DOES  : four figures, each showing a metadata distribution that a quantile table
-#         conveys poorly: (1) stored score by record type; (2) submission num_comments
-#         and upvote_ratio; (3) the derived ingestion lag by record type; (4) records
-#         per UTC day, all source records against the Tier 2 modelable documents.
-#         Titles, axis labels, tick labels and (where two series are drawn) a legend
-#         only. Nothing is excluded from any panel.
-# OUTPUT: PNG files under figures/.
+# Four figures: score by record type; submission num_comments and upvote_ratio;
+# ingestion lag; records per UTC day for all vs modelable documents.
 inventory_theme <- theme_minimal(base_size = 11) +
   theme(panel.grid.minor = element_blank(), panel.grid.major = element_line(colour = "#e1e0d9", linewidth = 0.3),
         axis.text = element_text(colour = "#52514e"), axis.title = element_text(colour = "#0b0b0b"),
@@ -966,9 +855,6 @@ save_fig("fig4_records_per_utc_day_source_vs_modelable.png", fig4, 9, 6)
 mark_stage("figures")
 
 # ---- Write tables ----
-# INPUT : the measurement objects above.
-# DOES  : write one CSV per table and record its dimensions for the sidecars.
-# OUTPUT: CSV files under tables/.
 table_dims <- list()
 write_table <- function(tbl, name) {
   path <- file.path(tab_dir, name)
@@ -1022,12 +908,7 @@ write_table(run_info,                             "run_info.csv")
 mark_stage("tables")
 
 # ---- Provenance sidecars ----
-# INPUT : the CSV and PNG outputs; the 8 source Parquet files and 2 ingest manifests;
-#         the delivered artifacts read.
-# DOES  : write one <output>.manifest.yml per output (input hashes, output hash and
-#         dimensions, script hash, git commit, parameters, package versions). No
-#         stochastic operation runs in this script, so no seed is recorded.
-# OUTPUT: *.manifest.yml next to each output.
+# One <output>.manifest.yml per output. Nothing here is random, so no seed is recorded.
 manifest_packages <- c("nanoparquet", "dplyr", "tidyr", "stringi", "readr", "ggplot2", "scales", "patchwork", "digest", "yaml", "jsonlite")
 package_versions  <- lapply(manifest_packages, function(p) list(name = p, version = as.character(packageVersion(p))))
 input_files <- c(
@@ -1035,7 +916,7 @@ input_files <- c(
   lapply(source_manifest_files, function(p) list(path = p, hash = sha256(p), format = "jsonl", role = "ingest manifest sidecar of the source data, read-only")),
   lapply(which(tier2_artifacts$exists), function(i) list(path = tier2_artifacts$path[i], hash = tier2_artifacts$sha256_now[i],
                                                          format = if (grepl("\\.rds$", tier2_artifacts$path[i])) "rds" else "csv",
-                                                         role = if (grepl("\\.rds$", tier2_artifacts$path[i])) "cached fit of the delivered Tier 2 run, read-only (doc_key and split read)" else "delivered Tier 2 table, read-only")))
+                                                         role = if (grepl("\\.rds$", tier2_artifacts$path[i])) "cached fit of the earlier Tier 2 run, read-only (doc_key and split read)" else "Tier 2 table from the earlier run, read-only")))
 manifest_parameters <- c(list(reader = "nanoparquet", documents_linked_by = "doc_key = 't1_' + comment id / 't3_' + submission id (the Tier 2 script's rule)",
                               modelable_definition = "Tier 2 document table model_status == 'modeled'",
                               no_model_fitted = "TRUE", no_records_filtered = "TRUE"),
@@ -1053,7 +934,7 @@ write_sidecar <- function(output) {
   manifest$software <- list(language = "R", language_version = paste(R.version$major, R.version$minor, sep = "."),
                             packages = package_versions, os = paste(Sys.info()[["sysname"]], Sys.info()[["release"]]))
   manifest$timestamp <- format(Sys.time(), "%Y-%m-%dT%H:%M:%SZ", tz = "UTC")
-  manifest$notes     <- "Metadata inventory of the July 2026 r/politics sample for later STM design: source fields, their observed characteristics, and their coverage over the Tier 2 LDA modelable documents. Source Parquet and delivered artifacts read-only; no model fitted; no records filtered, recoded or removed."
+  manifest$notes     <- "Metadata inventory of the July 2026 r/politics sample for later STM design: source fields, their observed characteristics, and their coverage over the Tier 2 LDA modelable documents. Source Parquet and Tier 2 files read-only; no model fitted; no records filtered, recoded or removed."
   write_yaml(manifest, paste0(output, ".manifest.yml"))
 }
 invisible(lapply(list.files(tab_dir, pattern = "\\.csv$", full.names = TRUE), write_sidecar))
@@ -1061,9 +942,6 @@ invisible(lapply(list.files(fig_dir, pattern = "\\.png$", full.names = TRUE), wr
 mark_stage("manifests")
 
 # ---- Console summary ----
-# INPUT : the headline tables.
-# DOES  : print them.
-# OUTPUT: console text.
 print(as.data.frame(field_inventory |> filter(population == pop_source) |> select(record_type, field, r_class, n_records, n_missing, n_empty_string, n_usable, n_distinct_nonmissing, cardinality_class)), right = FALSE)
 print(as.data.frame(linkage_counts), right = FALSE)
 print(as.data.frame(discrepancies), right = FALSE)

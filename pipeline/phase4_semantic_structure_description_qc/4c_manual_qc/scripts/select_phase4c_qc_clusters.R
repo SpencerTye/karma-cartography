@@ -1,17 +1,9 @@
-# =====================================================================
-# Phase 4C manual-QC sample selection (WORKLOAD PLANNING ONLY)
-#
-# Purpose: select the 10 largest + 15 random assigned Phase 3 clusters
-# from the completed Phase 4A cluster inventory and report the exact
-# document workload of that 25-cluster manual-QC sample. No manual QC,
-# no re-run of 4A/4B, no content inspection, no new metrics.
-#
-# Inputs  (read-only):
-#   4a_cluster_description_foundation/derived/cluster_inventory.parquet
-# Outputs:
-#   4c_manual_qc/planning/selected_clusters.csv
-#   4c_manual_qc/planning/WORKLOAD.md
-# =====================================================================
+# Phase 4C manual-QC sample selection (workload planning only).
+# Selects the 10 largest and 15 random assigned Phase 3 clusters from the Phase 4A cluster
+# inventory and reports the document workload of that 25-cluster sample.
+# Input: 4a_cluster_description_foundation/derived/cluster_inventory.parquet
+# Outputs: 4c_manual_qc/planning/selected_clusters.csv, 4c_manual_qc/planning/WORKLOAD.md
+# Env: KC_REPO_ROOT (default: working directory).
 
 suppressWarnings(suppressMessages({
   library(nanoparquet)
@@ -30,7 +22,7 @@ SEED <- 20260912L
 # ---- Load inventory (read-only) -------------------------------------
 inv <- as.data.frame(nanoparquet::read_parquet(inv_path), stringsAsFactors = FALSE)
 
-# ---- Integrity checks (fail loudly, do not silently proceed) --------
+# ---- Integrity checks ----------------------------------------------
 stopifnot(nrow(inv) == 5167L)
 stopifnot(!any(duplicated(inv$cluster_id)))
 stopifnot(all(c("cluster_id", "n_docs", "n_comments", "n_submissions",
@@ -38,7 +30,7 @@ stopifnot(all(c("cluster_id", "n_docs", "n_comments", "n_submissions",
 stopifnot(all(inv$n_docs == inv$n_comments + inv$n_submissions))
 stopifnot(all(inv$n_docs > 0L))
 
-# ---- 10 largest: n_docs DESC, ties broken by cluster_id ASC ---------
+# ---- 10 largest: n_docs descending, ties broken by cluster_id ascending
 ord_largest <- order(-inv$n_docs, inv$cluster_id)
 largest_idx <- ord_largest[1:10]
 largest_ids <- inv$cluster_id[largest_idx]
@@ -49,13 +41,12 @@ boundary_10 <- docs_sorted[10]
 boundary_11 <- docs_sorted[11]
 tie_at_boundary <- (boundary_10 == boundary_11)
 
-# ---- Eligible random pool = all clusters MINUS the 10 largest -------
-# Canonical, fully specified pool order: cluster_id ascending.
-# (sample() output depends on input-vector order, so we fix it.)
+# ---- Eligible random pool: all clusters except the 10 largest -------
+# Pool ordered by cluster_id, since sample() output depends on input order.
 eligible_ids <- sort(inv$cluster_id[!(inv$cluster_id %in% largest_ids)])
 stopifnot(length(eligible_ids) == 5167L - 10L)
 
-# ---- 15 random: simple random sampling WITHOUT replacement ----------
+# ---- 15 random: simple random sampling without replacement ----------
 set.seed(SEED)
 rng_kind <- RNGkind()
 random_ids <- sample(eligible_ids, size = 15L, replace = FALSE)
@@ -92,7 +83,7 @@ s_l <- grp(sel_largest)
 s_r <- grp(sel_random)
 s_a <- grp(selected)
 
-# ---- Write CSV deliverable ------------------------------------------
+# ---- Write CSV -----------------------------------------------------
 csv_path <- file.path(plan_dir, "selected_clusters.csv")
 readr::write_csv(selected, csv_path)
 
@@ -102,7 +93,7 @@ csv_sha    <- digest::digest(file = csv_path,     algo = "sha256")
 script_sha <- digest::digest(file = script_path,  algo = "sha256")
 stamp <- format(as.POSIXct(Sys.time(), tz = "UTC"), "%Y-%m-%dT%H:%M:%SZ")
 
-# ---- Build WORKLOAD.md (generated in R for exact numeric fidelity) --
+# ---- Build WORKLOAD.md ---------------------------------------------
 fmt <- function(x) if (isTRUE(x == round(x))) format(as.integer(round(x)), trim = TRUE) else as.character(x)
 id_size_table <- function(ids, sizes) {
   c("| cluster_id | n_docs |",
@@ -182,7 +173,7 @@ L <- c(
 md_path <- file.path(plan_dir, "WORKLOAD.md")
 writeLines(L, md_path, sep = "\n")
 
-# ---- Console echo (summary printed to the console) -----------------------
+# ---- Console summary -----------------------------------------------
 cat("\n================ SELECTED CLUSTERS (25) ================\n")
 print(selected, row.names = FALSE)
 

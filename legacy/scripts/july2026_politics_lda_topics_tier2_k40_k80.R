@@ -1,43 +1,12 @@
-# July 2026 r/politics sample — Phase 1A LDA, Tier 2 stopword condition:
-# K = 40 promoted to retained-output status, and the K = 40 versus K = 80 comparison package
-#
-# The delivered Tier 2 run (july2026_politics_lda_topics_tier2.R, outputs under
-# r_analysis_outputs/lda_topics_tier2/) retained K = 10 and K = 80 by its rule and
-# wrote the full document-level tables for them only. The user has since selected
-# K = 40 and K = 80 as the two candidate representations to carry forward. This
-# companion script
-#   (1) produces for K = 40 exactly the retained-model outputs the delivered run
-#       produced for K = 80 (the same thirteen tables and nine figures, the same
-#       arithmetic, the same file names with the K040 tag), from the cached
-#       K = 40 fits in lda_topics_tier2/models/ — nothing is re-fitted;
-#   (2) proves the arithmetic by regenerating every delivered K = 80 retained
-#       table in a scratch folder and matching the SHA256 recorded in each
-#       delivered manifest (nothing under lda_topics_tier2/ is written);
-#   (3) compares the two resolutions on the delivered measured evidence and on
-#       measured topic-to-topic correspondence (cosine of smoothed topic-word
-#       distributions, the quantity the delivered stability matching uses), with
-#       the AutoModerator civility-notice copies quantified in both;
-#   (4) writes inspection tables (top words with weights, representative
-#       documents with identifiers, topic probabilities) for every correspondence.
-# Every output goes under r_analysis_outputs/lda_topics_tier2_k40_k80/. The
-# delivered outputs, the model cache and the source Parquet are read-only and
-# untouched; the main script's own folders are never written to (it clears its
-# tables/ and figures/ on every run, so K = 40 files placed there would not
-# survive a re-run). Topics are identified only by number; no topic is named or
-# interpreted, and no choice between K = 40 and K = 80 is made here.
-#
-# The text-processing, split, retained-model and figure code below is copied
-# from the delivered script so that the K = 40 outputs are built by the same
-# arithmetic; the reference-only counts of the delivered tokeniser (case-preserved
-# tokens, SMART and Snowball occurrence counts) are omitted because they do not
-# enter any output here. Section headers name what each block reads and writes.
+# July 2026 r/politics, Phase 1A LDA, Tier 2 stopwords: K = 40 retained outputs and K = 40 vs K = 80 comparison.
+# Builds the K = 40 retained-model tables and figures from the cached fits in lda_topics_tier2/models/ (no re-fit),
+# rebuilds the K = 80 tables in a scratch folder to check them against their manifests, and compares the two K
+# by cosine of topic-word distributions, including the AutoModerator notice copies. Topics are identified by number only.
+# Inputs (read-only): source Parquet, the Tier 2 stopword workbook, lda_topics_tier2/ tables and model cache.
+# Outputs: r_analysis_outputs/lda_topics_tier2_k40_k80/. Env: KC_REPO_ROOT, LDA_K40_SCRATCH.
 
 # ---- Setup: packages, paths, parameters, output directories ----
-# INPUT : none.
-# DOES  : load packages; define the source paths, the delivered run's analytical
-#         parameters (unchanged) and this package's correspondence thresholds;
-#         create the output folder and clear this script's own outputs.
-# OUTPUT: parameter objects; figures/ and tables/ under the package folder.
+# Load packages, set paths and parameters, and clear this script's previous outputs.
 suppressPackageStartupMessages({
   library(nanoparquet); library(dplyr); library(tidyr); library(stringi); library(Matrix)
   library(clue); library(readxl); library(ggplot2); library(scales); library(readr); library(digest); library(yaml)
@@ -59,7 +28,7 @@ comments_dir      <- file.path(project_dir, "data_sample/comments/2026-07")
 submissions_dir   <- file.path(project_dir, "data_sample/submissions/2026-07")
 script_path       <- file.path(project_dir, "july2026_politics_lda_topics_tier2_k40_k80.R")
 main_script_path  <- file.path(project_dir, "july2026_politics_lda_topics_tier2.R")
-tier2_dir         <- file.path(project_dir, "r_analysis_outputs/lda_topics_tier2")     # delivered run (read-only)
+tier2_dir         <- file.path(project_dir, "r_analysis_outputs/lda_topics_tier2")     # original Tier 2 run (read-only)
 tier2_tab_dir     <- file.path(tier2_dir, "tables")
 model_dir         <- file.path(tier2_dir, "models")                                     # cached fits (read-only)
 stopword_workbook <- file.path(project_dir, "r_analysis_outputs/stopword_lists/curation/stopword_curation_tier2_cumulative_310_words.xlsx")
@@ -75,7 +44,7 @@ dir.create(scratch_dir, recursive = TRUE, showWarnings = FALSE)
 invisible(file.remove(list.files(c(fig_dir, tab_dir), pattern = "\\.(csv|png|yml)$", full.names = TRUE)))
 invisible(file.remove(list.files(scratch_dir, pattern = "\\.csv$", full.names = TRUE)))
 
-# Analytical parameters of the delivered run (unchanged; they reproduce the documents, split and tables).
+# Analytical parameters of the original Tier 2 run, unchanged so the documents, split and tables match.
 candidate_k                <- c(10L, 20L, 30L, 40L, 50L, 60L, 80L, 100L)
 fit_seeds                  <- c(1L, 2L, 3L)
 alpha_sum                  <- 5
@@ -98,12 +67,12 @@ representative_min_tokens  <- 25L
 active_topic_threshold     <- 0.1
 stability_cosine_threshold <- 0.8
 # This package's settings.
-selected_k              <- c(40L, 80L)   # the two user-selected candidate representations
+selected_k              <- c(40L, 80L)   # the two candidate representations carried forward
 k_new                   <- 40L           # outputs written here
-k_reference             <- 80L           # delivered outputs reproduced in scratch and hash-checked, not written
+k_reference             <- 80L           # existing outputs rebuilt in scratch and hash-checked, not written
 correspondence_threshold <- 0.5          # a K = 80 topic corresponds to a K = 40 topic at or above this cosine
-clear_threshold         <- stability_cosine_threshold   # a correspondence is "clear" at or above this cosine (the delivered stability threshold)
-notice_anchor           <- list(K = 10L, seed = 1L, topic = 10L)   # the delivered README's AutoModerator civility-notice topic
+clear_threshold         <- stability_cosine_threshold   # a correspondence is "clear" at or above this cosine (the original stability threshold)
+notice_anchor           <- list(K = 10L, seed = 1L, topic = 10L)   # AutoModerator civility-notice topic named in the original README
 notice_threshold        <- 0.9           # a topic is a notice copy at or above this cosine to the anchor (every cosine is reported)
 repetitive_ttr          <- 0.3           # type-token ratio below which a representative document is flagged as repetitive
 
@@ -113,10 +82,7 @@ sha256 <- function(path) paste0("sha256:", digest(path, algo = "sha256", file = 
 log_line("start; selected K =", paste(selected_k, collapse = ", "), "; writing K =", k_new)
 
 # ---- Stopword list: the Tier 2 workbook (read-only) ----
-# INPUT : the curation workbook.
-# DOES  : read the 'word' column of the Tier 2 sheet exactly as stored (the
-#         delivered rule); record its SHA256.
-# OUTPUT: stopword_list (character, 310); workbook_hash.
+# Read the 'word' column of the Tier 2 sheet as stored and record its SHA256.
 workbook_hash <- sha256(stopword_workbook)
 tier2_raw     <- read_excel(stopword_workbook, sheet = stopword_sheet, col_types = "text")
 stopword_list <- tier2_raw$word
@@ -124,9 +90,7 @@ token_regex   <- "\\p{L}+(?:'\\p{L}+)*"
 log_line("workbook read:", length(stopword_list), "entries; hash", workbook_hash)
 
 # ---- Read source data (read-only) ----
-# INPUT : 7 comment Parquet files + 1 submission Parquet file.
-# DOES  : read and stack; keep the columns used (column selection only).
-# OUTPUT: comments; submissions.
+# Read and stack the comment and submission files; keep only the columns used.
 comments <- lapply(comment_files, read_parquet) |>
   bind_rows() |>
   select(id, link_id, parent_id, author, created_utc, subreddit, body) |>
@@ -140,10 +104,8 @@ n_submissions_all <- nrow(submissions)
 mark_stage("read")
 log_line("read:", n_comments_all, "comments,", n_submissions_all, "submissions")
 
-# ---- Document table (the delivered rule) ----
-# INPUT : comments; submissions.
-# DOES  : one document per source record; doc_key = Reddit fullname.
-# OUTPUT: docs (source order: comments then submissions).
+# ---- Document table (same rule as the original run) ----
+# One document per source record; doc_key is the Reddit fullname. Comments first, then submissions.
 docs <- bind_rows(
   comments |>
     transmute(doc_type = "comment", doc_id = id, doc_key = paste0("t1_", id),
@@ -161,13 +123,9 @@ docs <- bind_rows(
 n_docs <- nrow(docs)
 mark_stage("document_table")
 
-# ---- Text processing (the delivered steps 1-8; reference-only counts omitted) ----
-# INPUT : docs$text.
-# DOES  : case folding; U+2019 -> '; URLs removed; letter-run tokens with
-#         internal apostrophes; trailing 's stripped; tokens shorter than
-#         min_token_chars removed; the 310 Tier 2 entries removed; tokens of
-#         removal-marker-only documents excluded.
-# OUTPUT: tok / tdoc; per-document token counts on docs.
+# ---- Text processing (steps 1-8 of the original script; reference-only counts omitted) ----
+# Lower-case, map U+2019 to ', strip URLs, extract letter runs with internal apostrophes, strip trailing 's,
+# drop tokens shorter than min_token_chars and the 310 Tier 2 stopwords, and exclude removal-marker-only documents.
 removal_markers  <- c("[deleted]", "[removed]", "[ Removed by Reddit ]")
 docs$marker_only <- stri_trim_both(docs$text) %in% removal_markers
 url_regex   <- "(https?://|www\\.)\\S+"
@@ -205,11 +163,8 @@ rm(in_marker_doc)
 mark_stage("tokenize")
 log_line("tokenize:", n_letter_tokens, "letter tokens;", sum(docs$n_tokens_stop), "Tier 2 stopword tokens removed")
 
-# ---- Vocabulary and document-term matrix (the delivered rule) ----
-# INPUT : tok / tdoc.
-# DOES  : terms kept when min_document_frequency <= df <= max_document_share x
-#         non-marker documents; one dtm row per source document.
-# OUTPUT: vocabulary; dtm_all; docs$model_status.
+# ---- Vocabulary and document-term matrix (same rule) ----
+# Keep terms with min_document_frequency <= df <= max_document_share x non-marker documents; one dtm row per source document.
 vocab_all  <- sort(unique(tok), method = "radix")
 term_index <- match(tok, vocab_all)
 tf_all <- sparseMatrix(i = tdoc, j = term_index, x = 1, dims = c(n_docs, length(vocab_all)), repr = "C")
@@ -235,11 +190,9 @@ docs <- docs |>
 mark_stage("vocabulary_dtm")
 log_line("dtm:", n_vocabulary, "terms;", sum(docs$model_status == "modeled"), "modeled documents")
 
-# ---- Training / held-out split (the delivered rule) ----
-# INPUT : dtm_all; docs.
-# DOES  : the seeded 5% held-out sample; modeled_order = training rows then
-#         held-out rows (the row order of every cached per-document object).
-# OUTPUT: train_rows / heldout_rows; dtm_train; docs$split; modeled_order.
+# ---- Training / held-out split (same rule) ----
+# Seeded 5% held-out sample. modeled_order (training rows, then held-out rows) is the row order of every
+# cached per-document object.
 modeled_rows     <- which(docs$model_status == "modeled")
 n_modeled        <- length(modeled_rows)
 heldout_eligible <- modeled_rows[docs$n_tokens_modeled[modeled_rows] >= 2L]
@@ -262,16 +215,9 @@ rm(dtm_all)
 mark_stage("split")
 log_line("split:", n_train, "training,", n_heldout, "held-out documents")
 
-# ---- Cached fits and delivered tables (read-only) ----
-# INPUT : models/fit_K###_seed#.rds for K = 40 and 80 (all seeds), the notice
-#         anchor fit, models/theta_K###_seed1.rds for K = 40 and 80; the
-#         delivered tables used for comparison and for consistency checks; the
-#         manifests of everything read.
-# DOES  : load; rebuild smoothed phi from the counts (the delivered arithmetic);
-#         record the SHA256 of every file read and compare it with the hash in
-#         its delivered manifest (integrity of the inputs).
-# OUTPUT: fits (named "K_seed"); anchor_fit; theta_files; delivered (list of
-#         tables); input_integrity (one row per file read).
+# ---- Cached fits and saved tables (read-only) ----
+# Load the K = 40 and K = 80 fits (all seeds), the notice anchor fit, the seed-1 thetas and the earlier tables;
+# rebuild smoothed phi from the counts; compare the SHA256 of every file read with its manifest.
 fit_key   <- function(K, seed) paste(K, seed, sep = "_")
 fit_path  <- function(K, seed) file.path(model_dir, sprintf("fit_K%03d_seed%d.rds", K, seed))
 theta_path <- function(K, seed) file.path(model_dir, sprintf("theta_K%03d_seed%d.rds", K, seed))
@@ -286,29 +232,26 @@ anchor_phi <- anchor_fit$phi[notice_anchor$topic, , drop = FALSE]
 theta_files <- setNames(lapply(selected_k, function(K) theta_path(K, fit_seeds[1])), as.character(selected_k))
 stopifnot(all(vapply(fits, function(f) identical(colnames(f$components), vocabulary), logical(1))))
 
-delivered_names <- c("stability_pairs", "topic_stability_seed1_all_k", "stability_summary", "model_comparison_by_fit",
+saved_names <- c("stability_pairs", "topic_stability_seed1_all_k", "stability_summary", "model_comparison_by_fit",
                      "model_comparison_summary", "topic_prevalence_all_models", "representative_documents_all_models",
                      "top_words_by_probability_all_models", "top_words_by_relevance_all_models",
                      "topic_pairs_word_distributions_all_models", "topic_pairs_document_scores_all_models",
                      "fit_runtime", "fit_traces", "parameters", "run_info")
-delivered_paths <- setNames(file.path(tier2_tab_dir, paste0(delivered_names, ".csv")), delivered_names)
-delivered <- lapply(delivered_paths, function(p) read_csv(p, show_col_types = FALSE, progress = FALSE, guess_max = 100000, trim_ws = FALSE))
+saved_paths <- setNames(file.path(tier2_tab_dir, paste0(saved_names, ".csv")), saved_names)
+saved <- lapply(saved_paths, function(p) read_csv(p, show_col_types = FALSE, progress = FALSE, guess_max = 100000, trim_ws = FALSE))
 manifest_hash <- function(path) tryCatch(read_yaml(paste0(path, ".manifest.yml"))$output_hash, error = function(e) NA_character_)
-files_read <- c(delivered_paths,
+files_read <- c(saved_paths,
                 setNames(vapply(names(fits), function(k) fit_path(fits[[k]]$K, fits[[k]]$seed), ""), paste0("fit_", names(fits))),
                 anchor_fit = fit_path(notice_anchor$K, notice_anchor$seed),
                 setNames(unlist(theta_files), paste0("theta_", selected_k, "_1")))
 input_integrity <- tibble(role = names(files_read), path = unname(files_read)) |>
-  mutate(sha256_now = vapply(path, sha256, ""), sha256_in_delivered_manifest = vapply(path, manifest_hash, ""),
-         hash_equals_manifest = sha256_now == sha256_in_delivered_manifest)
+  mutate(sha256_now = vapply(path, sha256, ""), sha256_in_saved_manifest = vapply(path, manifest_hash, ""),
+         hash_equals_manifest = sha256_now == sha256_in_saved_manifest)
 mark_stage("load_inputs")
-log_line("inputs loaded:", length(fits), "fits;", sum(input_integrity$hash_equals_manifest), "of", nrow(input_integrity), "files match their delivered manifests")
+log_line("inputs loaded:", length(fits), "fits;", sum(input_integrity$hash_equals_manifest), "of", nrow(input_integrity), "files match their manifests")
 
-# ---- Per-fit word tables (the delivered arithmetic) ----
-# INPUT : fits; vocabulary; term_frequency_share.
-# DOES  : the top-20 word tables and the ten-word strings used by the tables and
-#         figures, for the six fits.
-# OUTPUT: top_words_probability; top_words_relevance; paste_top().
+# ---- Per-fit word tables (same arithmetic as the original run) ----
+# Top-20 word tables and ten-word strings for the six fits.
 top_words_table <- function(fit, idx, lambda) {
   n <- ncol(idx)
   k_rep <- rep(seq_len(fit$K), each = n)
@@ -325,14 +268,10 @@ words_weighted <- function(fit, n = 10) vapply(seq_len(fit$K), function(k) {
   paste(sprintf("%s (%.4f)", vocabulary[i], fit$phi[k, i]), collapse = "; ")
 }, "")
 
-# ---- Stability across seeds for K = 40 and K = 80 (the delivered rule, recomputed) ----
-# INPUT : fits.
-# DOES  : for each K and seed pair, the cosine matrix of topic-word distributions,
-#         the Hungarian one-to-one assignment (clue::solve_LSAP, maximum total
-#         cosine), the matched cosines, top-20 Jaccard, best any-topic cosine, ARI
-#         of dominant topics; per seed-1 topic the weaker and stronger matched
-#         cosine. Checked against the delivered stability_pairs.csv below.
-# OUTPUT: stability_pairs; seed1_topic_stability; stability_cos (seed 1 vs 2, 3).
+# ---- Stability across seeds for K = 40 and K = 80 (recomputed with the original rule) ----
+# For each K and seed pair: cosine matrix of topic-word distributions, Hungarian one-to-one matching
+# (clue::solve_LSAP), matched cosines, top-20 Jaccard, best any-topic cosine and ARI of dominant topics.
+# Checked against the earlier stability_pairs.csv below.
 adjusted_rand_index <- function(a, b) {
   tab <- table(a, b)
   n <- sum(tab)
@@ -368,22 +307,19 @@ seed1_topic_stability <- stability_pairs |>
   summarise(weaker_matched_cosine = min(cosine), stronger_matched_cosine = max(cosine),
             reproduced_in_all_other_seeds = all(cosine >= stability_cosine_threshold),
             reproduced_in_no_other_seed = all(cosine < 0.5), .groups = "drop")
-# Agreement with the delivered table (same rule, same inputs): assignments identical, values equal to 1e-9.
-sp_delivered <- delivered$stability_pairs |> filter(K %in% selected_k) |> arrange(K, seed_a, seed_b, topic_a)
+# Agreement with the earlier table (same rule, same inputs): assignments identical, values equal to 1e-9.
+sp_saved <- saved$stability_pairs |> filter(K %in% selected_k) |> arrange(K, seed_a, seed_b, topic_a)
 sp_here      <- stability_pairs |> arrange(K, seed_a, seed_b, topic_a)
-stability_agrees <- nrow(sp_delivered) == nrow(sp_here) && all(sp_delivered$topic_b == sp_here$topic_b) && all(sp_delivered$best_topic_b == sp_here$best_topic_b) &&
-  all(sp_delivered$matched_is_row_maximum == sp_here$matched_is_row_maximum) &&
-  max(abs(sp_delivered$cosine - sp_here$cosine)) < 1e-9 && max(abs(sp_delivered$jaccard_top_words - sp_here$jaccard_top_words)) < 1e-9 &&
-  max(abs(sp_delivered$best_cosine_any_topic_b - sp_here$best_cosine_any_topic_b)) < 1e-9 &&
-  max(abs(sp_delivered$ari_dominant_topics - sp_here$ari_dominant_topics)) < 1e-9
+stability_agrees <- nrow(sp_saved) == nrow(sp_here) && all(sp_saved$topic_b == sp_here$topic_b) && all(sp_saved$best_topic_b == sp_here$best_topic_b) &&
+  all(sp_saved$matched_is_row_maximum == sp_here$matched_is_row_maximum) &&
+  max(abs(sp_saved$cosine - sp_here$cosine)) < 1e-9 && max(abs(sp_saved$jaccard_top_words - sp_here$jaccard_top_words)) < 1e-9 &&
+  max(abs(sp_saved$best_cosine_any_topic_b - sp_here$best_cosine_any_topic_b)) < 1e-9 &&
+  max(abs(sp_saved$ari_dominant_topics - sp_here$ari_dominant_topics)) < 1e-9
 mark_stage("stability")
-log_line("stability recomputed for K =", paste(selected_k, collapse = ", "), "; agrees with delivered table:", stability_agrees)
+log_line("stability recomputed for K =", paste(selected_k, collapse = ", "), "; agrees with earlier table:", stability_agrees)
 
-# ---- Representative documents for the six fits (the delivered rule, from the workers' indices) ----
-# INPUT : fits (rep_docs); docs.
-# DOES  : join the workers' representative-document indices to identifiers,
-#         metadata and the stored text, exactly as the delivered script does.
-# OUTPUT: representative_documents_six_fits; agreement flag against the delivered all-model table.
+# ---- Representative documents for the six fits (from the workers' indices) ----
+# Join the workers' representative-document indices to identifiers, metadata and text, as the original script does.
 representative_documents_six_fits <- bind_rows(lapply(fits, function(f) {
   r <- modeled_order[f$rep_docs$modeled_index]
   tibble(K = f$K, seed = f$seed, topic = f$rep_docs$topic, topic_label = paste("Topic", f$rep_docs$topic), rank = f$rep_docs$rank,
@@ -394,22 +330,17 @@ representative_documents_six_fits <- bind_rows(lapply(fits, function(f) {
          dominant_topic = f$dominant_m[f$rep_docs$modeled_index], dominant_topic_share = f$max_share_m[f$rep_docs$modeled_index],
          text = docs$text[r])
 }))
-rd_delivered <- delivered$representative_documents_all_models |> filter(K %in% selected_k) |> arrange(K, seed, topic, rank)
+rd_saved <- saved$representative_documents_all_models |> filter(K %in% selected_k) |> arrange(K, seed, topic, rank)
 rd_here      <- representative_documents_six_fits |> arrange(K, seed, topic, rank)
-representative_agrees <- nrow(rd_delivered) == nrow(rd_here) && identical(rd_delivered$doc_key, rd_here$doc_key) &&
-  identical(rd_delivered$text, rd_here$text) && max(abs(rd_delivered$topic_share_in_document - rd_here$topic_share_in_document)) < 1e-9 &&
-  all(rd_delivered$dominant_topic == rd_here$dominant_topic) && all(rd_delivered$topic == rd_here$topic) && all(rd_delivered$rank == rd_here$rank)
+representative_agrees <- nrow(rd_saved) == nrow(rd_here) && identical(rd_saved$doc_key, rd_here$doc_key) &&
+  identical(rd_saved$text, rd_here$text) && max(abs(rd_saved$topic_share_in_document - rd_here$topic_share_in_document)) < 1e-9 &&
+  all(rd_saved$dominant_topic == rd_here$dominant_topic) && all(rd_saved$topic == rd_here$topic) && all(rd_saved$rank == rd_here$rank)
 mark_stage("representative_documents")
 
-# ---- Retained-model tables (the delivered arithmetic, as a function of K) ----
-# INPUT : a K, its seed-1 fit and theta file; docs; the recomputed stability tables.
-# DOES  : exactly what the delivered script's retained-model loop does: load the
-#         worker's theta, check it against the fit, and derive over all modeled
-#         documents the token-weighted shares, shares by type and by UTC day,
-#         the topic x topic correlation, the concentration tables, the topic
-#         summary, the full document-topic table (one row per source document)
-#         and the full topic-word table, plus the cross-seed matrices.
-# OUTPUT: assemble_retained() returning the list of tables and per-document vectors.
+# ---- Retained-model tables (original arithmetic, as a function of K) ----
+# Same steps as the original retained-model loop: load the worker's theta, check it against the fit, and build
+# the shares, correlations, concentration tables, topic summary, full document-topic and topic-word tables,
+# and cross-seed matrices.
 band_breaks <- c(0, 1, 4, 9, 24, 49, 99, Inf)
 band_labels <- c("1", "2-4", "5-9", "10-24", "25-49", "50-99", "100+")
 assemble_retained <- function(K) {
@@ -550,32 +481,28 @@ retained_table_names <- function(r) {
     setNames(list(r$topic_word_table, r$document_topic_table), sprintf(c("topic_word_distribution_%s.csv", "document_topic_distribution_%s.csv"), tag)))
 }
 
-# ---- K = 80: reproduce the delivered retained tables in scratch and hash-check them (nothing written to the delivered folder) ----
-# INPUT : the K = 80 seed-1 fit and theta; the delivered K080 manifests.
-# DOES  : assemble every K = 80 retained table with the function above, write it
-#         to the scratch folder with the same writer, and compare its SHA256 with
-#         the output_hash recorded in the delivered manifest and with the
-#         delivered file's current hash. The scratch files are deleted afterwards.
-# OUTPUT: k80_reproduction (one row per table); retained_ref (theta and vectors kept for the cross-K tables).
+# ---- K = 80: rebuild the existing retained tables in scratch and hash-check them (nothing written to lda_topics_tier2/) ----
+# Each table's SHA256 is compared with its manifest's output_hash and with the current file on disk; scratch
+# copies are deleted. retained_ref is kept for the cross-K tables.
 retained_ref <- assemble_retained(k_reference)
 ref_tables <- retained_table_names(retained_ref)
 k80_reproduction <- bind_rows(lapply(names(ref_tables), function(name) {
   scratch_path   <- file.path(scratch_dir, name)
-  delivered_path <- file.path(tier2_tab_dir, name)
+  saved_path <- file.path(tier2_tab_dir, name)
   write_csv(ref_tables[[name]], scratch_path)
   h_scratch    <- sha256(scratch_path)
-  h_manifest   <- manifest_hash(delivered_path)
-  h_delivered  <- if (file.exists(delivered_path)) sha256(delivered_path) else NA_character_
+  h_manifest   <- manifest_hash(saved_path)
+  h_saved  <- if (file.exists(saved_path)) sha256(saved_path) else NA_character_
   file.remove(scratch_path)
   tibble(table = name, rows = nrow(ref_tables[[name]]), cols = ncol(ref_tables[[name]]),
-         sha256_regenerated_here = h_scratch, sha256_in_delivered_manifest = h_manifest,
-         sha256_of_delivered_file_now = h_delivered, delivered_file_present = file.exists(delivered_path),
+         sha256_regenerated_here = h_scratch, sha256_in_saved_manifest = h_manifest,
+         sha256_of_saved_file_now = h_saved, saved_file_present = file.exists(saved_path),
          regenerated_equals_manifest = h_scratch == h_manifest,
-         delivered_file_equals_manifest = !is.na(h_delivered) & h_delivered == h_manifest)
+         saved_file_equals_manifest = !is.na(h_saved) & h_saved == h_manifest)
 }))
 retained_ref$document_topic_table <- NULL; retained_ref$topic_word_table <- NULL; rm(ref_tables); invisible(gc())
 mark_stage("k80_reproduction")
-log_line("K = 80 reproduction:", sum(k80_reproduction$regenerated_equals_manifest), "of", nrow(k80_reproduction), "tables equal their delivered manifests")
+log_line("K = 80 reproduction:", sum(k80_reproduction$regenerated_equals_manifest), "of", nrow(k80_reproduction), "tables equal their manifests")
 
 # ---- K = 40: the retained-model outputs (written to the package) ----
 retained_new <- assemble_retained(k_new)
@@ -583,26 +510,9 @@ mark_stage("retained_K040")
 log_line("K = 40 retained tables assembled in", round(retained_new$seconds, 1), "s")
 
 # ---- Cross-K correspondence: K = 40 topics against K = 80 topics ----
-# INPUT : fits (phi, top-20 word indices) for all seeds; the two seed-1 thetas
-#         and dominant-topic vectors from the retained assembly.
-# DOES  : the correspondence measure is the cosine similarity between the
-#         smoothed topic-word distributions (phi rows) of a K = 40 topic and a
-#         K = 80 topic — the quantity the delivered cross-seed matching uses,
-#         applied across K. It is computed for every K = 40 topic x K = 80 topic
-#         pair and every seed pair (9), so the structure can be checked across
-#         seeds. For the seed-1 pair three supporting measures are added: the
-#         Jaccard overlap of the two topics' top-20 words, the Pearson
-#         correlation of their document shares over all modeled documents, and
-#         the cross-tabulation of dominant topics (how the documents dominated
-#         by a K = 40 topic are dominated under K = 80). A K = 80 topic
-#         "corresponds" to a K = 40 topic at cosine >= correspondence_threshold
-#         (0.5) and the correspondence is "clear" at >= clear_threshold (0.8, the
-#         delivered stability threshold). These thresholds are this package's
-#         choices; every cosine is reported so other cuts can be read off.
-#         No lineage or meaning is inferred: a correspondence is a measured
-#         similarity of word distributions, nothing more.
-# OUTPUT: cross tables (long and wide), per-topic correspondence tables in both
-#         directions, the per-seed-pair structure summary.
+# Correspondence = cosine of smoothed topic-word distributions between a K = 40 and a K = 80 topic, for all
+# 9 seed pairs. Seed 1 also gets top-20 Jaccard, document-share correlation and a dominant-topic cross-tab.
+# A K = 80 topic corresponds at cosine >= 0.5 and clearly at >= 0.8; every cosine is reported.
 f40 <- fits[[fit_key(k_new, 1L)]]; f80 <- fits[[fit_key(k_reference, 1L)]]
 cross_quantity <- "cosine similarity of smoothed topic-word distributions (phi rows) between the K = 40 topic and the K = 80 topic (different fits, different K)"
 cross_cos_all <- list()
@@ -703,18 +613,8 @@ log_line("cross-K: seed 1: ", sum(topic_correspondence_K040$n_K080_topics_at_or_
          sum(topic_predecessors_K080$best_cosine < correspondence_threshold), "K = 80 topics without predecessor")
 
 # ---- AutoModerator civility-notice copies in the two K ----
-# INPUT : fits (all seeds of both K); the anchor topic; docs; the retained tables.
-# DOES  : a topic is a notice copy when the cosine between its topic-word
-#         distribution and the anchor (the delivered README's civility-notice
-#         topic, K = 10 seed 1 Topic 10) is at least notice_threshold; every
-#         topic's cosine to the anchor is recorded. Per copy: token shares,
-#         dominant documents, top author, coherence, exclusivity, its matched
-#         cosine against the other seeds. Per fit: number of copies, share of
-#         the K slots, combined token mass, documents dominated by any copy,
-#         between-copy similarities on all four topic x topic quantities, and
-#         how many copies have a near-identical copy in each other seed.
-#         Nothing is removed, filtered or altered.
-# OUTPUT: notice_topics; notice_summary.
+# A topic is a notice copy when its cosine to the anchor (K = 10 seed 1 Topic 10) is at least notice_threshold.
+# Per-copy and per-fit statistics are recorded; nothing is removed or altered.
 author_m <- docs$author[modeled_order]
 notice_topics <- bind_rows(lapply(names(fits), function(k) {
   f <- fits[[k]]; cs <- notice_cos[[k]]; hit <- which(is_notice[[k]])
@@ -764,13 +664,8 @@ notice_summary <- bind_rows(lapply(names(fits), function(k) {
 mark_stage("notice_topics")
 
 # ---- Representative-document inspectability proxies (six fits) ----
-# INPUT : representative_documents_six_fits; fits; the tokeniser rules.
-# DOES  : per representative document: how many of its topic's ten top words
-#         occur in it (tokens recomputed from the stored text by the delivered
-#         rules), its type-token ratio, whether it is dominated by its topic and
-#         whether AutoModerator wrote it; per topic and fit the summaries used
-#         in the comparison.
-# OUTPUT: representative_document_rows (with proxies); representative_document_proxies (per topic and fit).
+# Per representative document: how many of its topic's ten top words it contains (tokens recomputed with the
+# original rules), type-token ratio, whether its topic dominates it, and whether AutoModerator wrote it.
 recompute_tokens <- function(text) {
   x <- stri_replace_all_regex(stri_replace_all_fixed(stri_trans_tolower(text), intToUtf8(0x2019), "'"), url_regex, " ", opts_regex = url_opts)
   t <- stri_extract_all_regex(x, token_regex, omit_no_match = TRUE)[[1]]
@@ -797,15 +692,9 @@ representative_document_proxies <- representative_document_rows |>
 mark_stage("representative_proxies")
 
 # ---- Inspection tables for every correspondence and split ----
-# INPUT : the correspondence tables; representative_document_rows; fits.
-# DOES  : one row per K = 40 x K = 80 pair at or above the correspondence
-#         threshold (seed 1), with both topics' ten top words and weights,
-#         shares, stability and notice flags, plus one row per K = 80 topic
-#         without a predecessor; and a document table in which every K = 40
-#         topic's five representative documents are followed by those of each
-#         K = 80 topic whose best predecessor it is (K = 80 topics without a
-#         predecessor form the last group). Every K = 80 topic appears once.
-# OUTPUT: correspondence_inspection; correspondence_representative_documents.
+# One row per K = 40 x K = 80 pair at or above the threshold (seed 1), plus one per K = 80 topic without a
+# predecessor. The document table lists each K = 40 topic's representative documents followed by those of the
+# K = 80 topics whose best predecessor it is; K = 80 topics without a predecessor come last.
 ww40 <- words_weighted(f40); ww80 <- words_weighted(f80)
 pair_rows <- cross_k_pairs |> filter(at_or_above_correspondence_threshold) |> arrange(topic_K040, desc(word_cosine))
 no_pred <- topic_predecessors_K080 |> filter(best_cosine < correspondence_threshold)
@@ -851,16 +740,10 @@ correspondence_representative_documents <- bind_rows(lapply(group_order, functio
 }))
 mark_stage("inspection_tables")
 
-# ---- The K = 40 versus K = 80 comparison on the delivered measured evidence ----
-# INPUT : the delivered per-fit, per-K, stability and runtime tables; the fits
-#         (traces, per-document summaries, K x K matrices); the notice and
-#         representative-document tables above.
-# DOES  : one row per item with the K = 40 and K = 80 values (per-seed triples
-#         where the quantity is per fit), the source table and a note. Items
-#         marked "derived here" are arithmetic on the cached fits or on the
-#         delivered tables, not new fits.
-# OUTPUT: comparison_summary.
-mcf <- delivered$model_comparison_by_fit; mcs <- delivered$model_comparison_summary; ss <- delivered$stability_summary; frt <- delivered$fit_runtime
+# ---- K = 40 versus K = 80 comparison ----
+# One row per item with K = 40 and K = 80 values (per-seed triples where per fit), the source table and a note.
+# "derived here" items are computed from the cached fits or earlier tables; nothing is re-fitted.
+mcf <- saved$model_comparison_by_fit; mcs <- saved$model_comparison_summary; ss <- saved$stability_summary; frt <- saved$fit_runtime
 cmp <- list()
 add_item <- function(section, item, k40, k80, source, note = "") cmp[[length(cmp) + 1L]] <<- tibble(section = section, item = item, K040 = as.character(k40), K080 = as.character(k80), source = source, note = note)
 triple <- function(tbl, K, col, digits = 3) paste(formatC(tbl[[col]][tbl$K == K][order(tbl$seed[tbl$K == K])], format = "f", digits = digits, big.mark = ","), collapse = " / ")
@@ -872,36 +755,36 @@ notice_n <- function(K) paste(vapply(fit_seeds, function(s) notice_summary$notic
 non_notice_pairs <- function(f, m, thr) { nn <- !is_notice[[fit_key(f$K, f$seed)]]; mm <- m[nn, nn]; sum(mm[upper.tri(mm)] >= thr) }
 most_similar_non_notice <- function(f) { nn <- which(!is_notice[[fit_key(f$K, f$seed)]]); mm <- f$word_cos[nn, nn]; diag(mm) <- 0; i <- which(mm == max(mm), arr.ind = TRUE)[1, ]; sprintf("T%d-T%d (%.3f)", nn[i[1]], nn[i[2]], max(mm)) }
 S <- "held-out perplexity"
-add_item(S, "held-out perplexity per seed (document completion; lower is better)", triple(mcf, 40, "heldout_perplexity", 1), triple(mcf, 80, "heldout_perplexity", 1), "delivered: model_comparison_by_fit.csv")
-add_item(S, "held-out perplexity, mean (SD over seeds)", sprintf("%s (%s)", single(mcs, 40, "heldout_perplexity_mean", 2), single(mcs, 40, "heldout_perplexity_sd", 2)), sprintf("%s (%s)", single(mcs, 80, "heldout_perplexity_mean", 2), single(mcs, 80, "heldout_perplexity_sd", 2)), "delivered: model_comparison_summary.csv")
-add_item(S, "rank of the mean over the eight candidate K (1 = lowest)", single(mcs, 40, "rank_heldout_perplexity", 0), single(mcs, 80, "rank_heldout_perplexity", 0), "delivered: model_comparison_summary.csv")
-add_item(S, "within one seed SD of the minimum (one-standard-error band)", mcs$heldout_perplexity_within_one_sd_of_best[mcs$K == 40], mcs$heldout_perplexity_within_one_sd_of_best[mcs$K == 80], "delivered: model_comparison_summary.csv", sprintf("band: minimum %.2f + SD %.2f = %.2f", min(mcs$heldout_perplexity_mean), mcs$heldout_perplexity_sd[which.min(mcs$heldout_perplexity_mean)], min(mcs$heldout_perplexity_mean) + mcs$heldout_perplexity_sd[which.min(mcs$heldout_perplexity_mean)]))
+add_item(S, "held-out perplexity per seed (document completion; lower is better)", triple(mcf, 40, "heldout_perplexity", 1), triple(mcf, 80, "heldout_perplexity", 1), "original run: model_comparison_by_fit.csv")
+add_item(S, "held-out perplexity, mean (SD over seeds)", sprintf("%s (%s)", single(mcs, 40, "heldout_perplexity_mean", 2), single(mcs, 40, "heldout_perplexity_sd", 2)), sprintf("%s (%s)", single(mcs, 80, "heldout_perplexity_mean", 2), single(mcs, 80, "heldout_perplexity_sd", 2)), "original run: model_comparison_summary.csv")
+add_item(S, "rank of the mean over the eight candidate K (1 = lowest)", single(mcs, 40, "rank_heldout_perplexity", 0), single(mcs, 80, "rank_heldout_perplexity", 0), "original run: model_comparison_summary.csv")
+add_item(S, "within one seed SD of the minimum (one-standard-error band)", mcs$heldout_perplexity_within_one_sd_of_best[mcs$K == 40], mcs$heldout_perplexity_within_one_sd_of_best[mcs$K == 80], "original run: model_comparison_summary.csv", sprintf("band: minimum %.2f + SD %.2f = %.2f", min(mcs$heldout_perplexity_mean), mcs$heldout_perplexity_sd[which.min(mcs$heldout_perplexity_mean)], min(mcs$heldout_perplexity_mean) + mcs$heldout_perplexity_sd[which.min(mcs$heldout_perplexity_mean)]))
 perp_diff <- mcs$heldout_perplexity_mean[mcs$K == 40] - mcs$heldout_perplexity_mean[mcs$K == 80]
 add_item(S, "difference of the means, K = 40 minus K = 80", sprintf("%.2f", perp_diff), "", "derived here from model_comparison_summary.csv",
          sprintf("%.1f seed SDs of K = 40 and %.1f seed SDs of K = 80", perp_diff / mcs$heldout_perplexity_sd[mcs$K == 40], perp_diff / mcs$heldout_perplexity_sd[mcs$K == 80]))
-add_item(S, "training perplexity per seed", triple(mcf, 40, "train_perplexity", 1), triple(mcf, 80, "train_perplexity", 1), "delivered: model_comparison_by_fit.csv")
+add_item(S, "training perplexity per seed", triple(mcf, 40, "train_perplexity", 1), triple(mcf, 80, "train_perplexity", 1), "original run: model_comparison_by_fit.csv")
 S <- "coherence"
-add_item(S, "NPMI over the top 10 words, mean over topics, per seed (higher is better)", triple(mcf, 40, "coherence_npmi", 4), triple(mcf, 80, "coherence_npmi", 4), "delivered: model_comparison_by_fit.csv")
-add_item(S, "NPMI mean over seeds (rank over the eight K)", sprintf("%s (rank %s)", single(mcs, 40, "coherence_npmi_mean", 4), single(mcs, 40, "rank_coherence_npmi", 0)), sprintf("%s (rank %s)", single(mcs, 80, "coherence_npmi_mean", 4), single(mcs, 80, "rank_coherence_npmi", 0)), "delivered: model_comparison_summary.csv")
+add_item(S, "NPMI over the top 10 words, mean over topics, per seed (higher is better)", triple(mcf, 40, "coherence_npmi", 4), triple(mcf, 80, "coherence_npmi", 4), "original run: model_comparison_by_fit.csv")
+add_item(S, "NPMI mean over seeds (rank over the eight K)", sprintf("%s (rank %s)", single(mcs, 40, "coherence_npmi_mean", 4), single(mcs, 40, "rank_coherence_npmi", 0)), sprintf("%s (rank %s)", single(mcs, 80, "coherence_npmi_mean", 4), single(mcs, 80, "rank_coherence_npmi", 0)), "original run: model_comparison_summary.csv")
 add_item(S, "NPMI mean excluding the notice copies, per seed", per_seed(function(f) mean(f$topic_npmi[!is_notice[[fit_key(f$K, f$seed)]]]), 40, 4), per_seed(function(f) mean(f$topic_npmi[!is_notice[[fit_key(f$K, f$seed)]]]), 80, 4), "derived here from the cached fits", "notice copies identified by cosine to the anchor (notice_topics_summary)")
-add_item(S, "NPMI median over topics, per seed", triple(mcf, 40, "coherence_npmi_median", 4), triple(mcf, 80, "coherence_npmi_median", 4), "delivered: model_comparison_by_fit.csv")
-add_item(S, "NPMI minimum over topics, per seed", triple(mcf, 40, "coherence_npmi_min", 4), triple(mcf, 80, "coherence_npmi_min", 4), "delivered: model_comparison_by_fit.csv")
+add_item(S, "NPMI median over topics, per seed", triple(mcf, 40, "coherence_npmi_median", 4), triple(mcf, 80, "coherence_npmi_median", 4), "original run: model_comparison_by_fit.csv")
+add_item(S, "NPMI minimum over topics, per seed", triple(mcf, 40, "coherence_npmi_min", 4), triple(mcf, 80, "coherence_npmi_min", 4), "original run: model_comparison_by_fit.csv")
 add_item(S, "topics with NPMI below 0.1, per seed", per_seed(function(f) sum(f$topic_npmi < 0.1), 40, 0), per_seed(function(f) sum(f$topic_npmi < 0.1), 80, 0), "derived here from the cached fits")
-add_item(S, "UMass coherence, mean over seeds", single(mcs, 40, "coherence_umass_mean", 3), single(mcs, 80, "coherence_umass_mean", 3), "delivered: model_comparison_summary.csv")
-add_item(S, "exclusivity of the top 10 words, mean over seeds (rank)", sprintf("%s (rank %s)", single(mcs, 40, "exclusivity_mean", 3), single(mcs, 40, "rank_exclusivity", 0)), sprintf("%s (rank %s)", single(mcs, 80, "exclusivity_mean", 3), single(mcs, 80, "rank_exclusivity", 0)), "delivered: model_comparison_summary.csv")
+add_item(S, "UMass coherence, mean over seeds", single(mcs, 40, "coherence_umass_mean", 3), single(mcs, 80, "coherence_umass_mean", 3), "original run: model_comparison_summary.csv")
+add_item(S, "exclusivity of the top 10 words, mean over seeds (rank)", sprintf("%s (rank %s)", single(mcs, 40, "exclusivity_mean", 3), single(mcs, 40, "rank_exclusivity", 0)), sprintf("%s (rank %s)", single(mcs, 80, "exclusivity_mean", 3), single(mcs, 80, "rank_exclusivity", 0)), "original run: model_comparison_summary.csv")
 add_item(S, "exclusivity mean excluding the notice copies, per seed", per_seed(function(f) mean(f$topic_exclusivity[!is_notice[[fit_key(f$K, f$seed)]]]), 40, 3), per_seed(function(f) mean(f$topic_exclusivity[!is_notice[[fit_key(f$K, f$seed)]]]), 80, 3), "derived here from the cached fits")
-add_item(S, "Cao et al. 2009 (mean pairwise word cosine; lower is better) / Deveaud et al. 2014 (higher) / Arun et al. 2010 (lower), means over seeds", sprintf("%s / %s / %s", single(mcs, 40, "cao_juan_2009_mean", 4), single(mcs, 40, "deveaud_2014_mean", 3), single(mcs, 40, "arun_2010_mean", 4)), sprintf("%s / %s / %s", single(mcs, 80, "cao_juan_2009_mean", 4), single(mcs, 80, "deveaud_2014_mean", 3), single(mcs, 80, "arun_2010_mean", 4)), "delivered: model_comparison_summary.csv")
+add_item(S, "Cao et al. 2009 (mean pairwise word cosine; lower is better) / Deveaud et al. 2014 (higher) / Arun et al. 2010 (lower), means over seeds", sprintf("%s / %s / %s", single(mcs, 40, "cao_juan_2009_mean", 4), single(mcs, 40, "deveaud_2014_mean", 3), single(mcs, 40, "arun_2010_mean", 4)), sprintf("%s / %s / %s", single(mcs, 80, "cao_juan_2009_mean", 4), single(mcs, 80, "deveaud_2014_mean", 3), single(mcs, 80, "arun_2010_mean", 4)), "original run: model_comparison_summary.csv")
 S <- "cross-seed stability"
-add_item(S, "matched-topic cosine (Hungarian one-to-one, topic-word distributions): mean / median / minimum over the three seed pairs", sprintf("%s / %s / %s", single(ss, 40, "matched_cosine_mean", 3), single(ss, 40, "matched_cosine_median", 3), single(ss, 40, "matched_cosine_min", 3)), sprintf("%s / %s / %s", single(ss, 80, "matched_cosine_mean", 3), single(ss, 80, "matched_cosine_median", 3), single(ss, 80, "matched_cosine_min", 3)), "delivered: stability_summary.csv", "the minimum is a forced match of a surplus notice copy in both K (K = 40 seed 2 to seed 3; K = 80 seed 1 to seed 3)")
-add_item(S, "rank of the matched cosine mean over the eight K", single(mcs, 40, "rank_stability", 0), single(mcs, 80, "rank_stability", 0), "delivered: model_comparison_summary.csv")
-add_item(S, "share of matched pairs at cosine >= 0.8", single(ss, 40, "share_matched_cosine_at_least_threshold", 3), single(ss, 80, "share_matched_cosine_at_least_threshold", 3), "delivered: stability_summary.csv")
-add_item(S, "share of matches that are not the row maximum", single(ss, 40, "share_matched_not_row_maximum", 3), single(ss, 80, "share_matched_not_row_maximum", 3), "delivered: stability_summary.csv")
-add_item(S, "mean top-20 Jaccard of matched pairs", single(ss, 40, "jaccard_top_words_mean", 3), single(ss, 80, "jaccard_top_words_mean", 3), "delivered: stability_summary.csv")
-add_item(S, "adjusted Rand index of dominant topics (document labels), mean over seed pairs", single(ss, 40, "ari_dominant_topics_mean", 3), single(ss, 80, "ari_dominant_topics_mean", 3), "delivered: stability_summary.csv")
-add_item(S, "seed-1 topics matched at >= 0.8 in both other seeds (count; share)", sprintf("%d of 40; %.3f", sum(stab40$reproduced_in_all_other_seeds), mean(stab40$reproduced_in_all_other_seeds)), sprintf("%d of 80; %.3f", sum(stab80$reproduced_in_all_other_seeds), mean(stab80$reproduced_in_all_other_seeds)), "delivered: topic_stability_seed1_all_k.csv (recomputed here, equal)")
-add_item(S, "seed-1 topics below 0.5 in both other seeds (no counterpart)", sprintf("%d: %s", sum(stab40$reproduced_in_no_other_seed), paste0("T", stab40$topic_a[stab40$reproduced_in_no_other_seed], collapse = ", ")), sprintf("%d: %s", sum(stab80$reproduced_in_no_other_seed), paste0("T", stab80$topic_a[stab80$reproduced_in_no_other_seed], collapse = ", ")), "delivered: topic_stability_seed1_all_k.csv")
+add_item(S, "matched-topic cosine (Hungarian one-to-one, topic-word distributions): mean / median / minimum over the three seed pairs", sprintf("%s / %s / %s", single(ss, 40, "matched_cosine_mean", 3), single(ss, 40, "matched_cosine_median", 3), single(ss, 40, "matched_cosine_min", 3)), sprintf("%s / %s / %s", single(ss, 80, "matched_cosine_mean", 3), single(ss, 80, "matched_cosine_median", 3), single(ss, 80, "matched_cosine_min", 3)), "original run: stability_summary.csv", "the minimum is a forced match of a surplus notice copy in both K (K = 40 seed 2 to seed 3; K = 80 seed 1 to seed 3)")
+add_item(S, "rank of the matched cosine mean over the eight K", single(mcs, 40, "rank_stability", 0), single(mcs, 80, "rank_stability", 0), "original run: model_comparison_summary.csv")
+add_item(S, "share of matched pairs at cosine >= 0.8", single(ss, 40, "share_matched_cosine_at_least_threshold", 3), single(ss, 80, "share_matched_cosine_at_least_threshold", 3), "original run: stability_summary.csv")
+add_item(S, "share of matches that are not the row maximum", single(ss, 40, "share_matched_not_row_maximum", 3), single(ss, 80, "share_matched_not_row_maximum", 3), "original run: stability_summary.csv")
+add_item(S, "mean top-20 Jaccard of matched pairs", single(ss, 40, "jaccard_top_words_mean", 3), single(ss, 80, "jaccard_top_words_mean", 3), "original run: stability_summary.csv")
+add_item(S, "adjusted Rand index of dominant topics (document labels), mean over seed pairs", single(ss, 40, "ari_dominant_topics_mean", 3), single(ss, 80, "ari_dominant_topics_mean", 3), "original run: stability_summary.csv")
+add_item(S, "seed-1 topics matched at >= 0.8 in both other seeds (count; share)", sprintf("%d of 40; %.3f", sum(stab40$reproduced_in_all_other_seeds), mean(stab40$reproduced_in_all_other_seeds)), sprintf("%d of 80; %.3f", sum(stab80$reproduced_in_all_other_seeds), mean(stab80$reproduced_in_all_other_seeds)), "original run: topic_stability_seed1_all_k.csv (recomputed here, equal)")
+add_item(S, "seed-1 topics below 0.5 in both other seeds (no counterpart)", sprintf("%d: %s", sum(stab40$reproduced_in_no_other_seed), paste0("T", stab40$topic_a[stab40$reproduced_in_no_other_seed], collapse = ", ")), sprintf("%d: %s", sum(stab80$reproduced_in_no_other_seed), paste0("T", stab80$topic_a[stab80$reproduced_in_no_other_seed], collapse = ", ")), "original run: topic_stability_seed1_all_k.csv")
 add_item(S, "seed-1 topics below 0.5 in at least one other seed", sum(stab40$weaker_matched_cosine < 0.5), sum(stab80$weaker_matched_cosine < 0.5), "derived here from the matched pairs")
-add_item(S, "mean of each seed-1 topic's weaker matched cosine", single(ss, 40, "seed1_weaker_matched_cosine_mean", 3), single(ss, 80, "seed1_weaker_matched_cosine_mean", 3), "delivered: stability_summary.csv")
+add_item(S, "mean of each seed-1 topic's weaker matched cosine", single(ss, 40, "seed1_weaker_matched_cosine_mean", 3), single(ss, 80, "seed1_weaker_matched_cosine_mean", 3), "original run: stability_summary.csv")
 add_item(S, "matched pairs below 0.5 per seed pair (1-2 / 1-3 / 2-3)", paste(vapply(seed_pairs, function(p) sum(stability_pairs$cosine[stability_pairs$K == 40 & stability_pairs$seed_a == p[1] & stability_pairs$seed_b == p[2]] < 0.5), integer(1)), collapse = " / "), paste(vapply(seed_pairs, function(p) sum(stability_pairs$cosine[stability_pairs$K == 80 & stability_pairs$seed_a == p[1] & stability_pairs$seed_b == p[2]] < 0.5), integer(1)), collapse = " / "), "derived here from the matched pairs")
 S <- "duplicate and near-duplicate topics"
 add_item(S, "notice copies per seed (1 / 2 / 3)", notice_n(40), notice_n(80), "derived here: notice_topics_summary.csv", sprintf("copy = cosine >= %.2f to the anchor topic", notice_threshold))
@@ -911,48 +794,48 @@ add_item(S, "topic pairs with word cosine >= 0.7 excluding notice pairs, per see
 add_item(S, "most similar non-notice pair (word cosine), per seed", paste(vapply(fit_seeds, function(s) most_similar_non_notice(fits[[fit_key(40, s)]]), ""), collapse = " / "), paste(vapply(fit_seeds, function(s) most_similar_non_notice(fits[[fit_key(80, s)]]), ""), collapse = " / "), "derived here from the cached fits")
 add_item(S, "topic pairs with top-20 Jaccard >= 0.3 excluding notice pairs, per seed", per_seed(function(f) non_notice_pairs(f, f$top_jaccard, 0.3), 40, 0), per_seed(function(f) non_notice_pairs(f, f$top_jaccard, 0.3), 80, 0), "derived here from the cached fits")
 add_item(S, "largest document-share correlation between two topics excluding notice pairs, per seed", per_seed(function(f) { nn <- !is_notice[[fit_key(f$K, f$seed)]]; m <- f$doc_cor[nn, nn]; max(m[upper.tri(m)]) }, 40, 3), per_seed(function(f) { nn <- !is_notice[[fit_key(f$K, f$seed)]]; m <- f$doc_cor[nn, nn]; max(m[upper.tri(m)]) }, 80, 3), "derived here from the cached fits")
-add_item(S, "most co-active pair: share of documents with both topics >= 0.1, per seed", triple(mcf, 40, "co_activation_pair_max", 4), triple(mcf, 80, "co_activation_pair_max", 4), "delivered: model_comparison_by_fit.csv")
+add_item(S, "most co-active pair: share of documents with both topics >= 0.1, per seed", triple(mcf, 40, "co_activation_pair_max", 4), triple(mcf, 80, "co_activation_pair_max", 4), "original run: model_comparison_by_fit.csv")
 add_item(S, "effective distinct topics = K minus surplus notice copies, per seed", paste(notice_summary$effective_distinct_topics[notice_summary$K == 40], collapse = " / "), paste(notice_summary$effective_distinct_topics[notice_summary$K == 80], collapse = " / "), "derived here: notice_topics_summary.csv")
 S <- "convergence"
-add_item(S, "fit-phase sampling iterations per seed (ceiling 1,000; stop when 10 iterations improve the pseudo log-likelihood by < 0.01%)", triple(mcf, 40, "iterations_fit", 0), triple(mcf, 80, "iterations_fit", 0), "delivered: model_comparison_by_fit.csv")
+add_item(S, "fit-phase sampling iterations per seed (ceiling 1,000; stop when 10 iterations improve the pseudo log-likelihood by < 0.01%)", triple(mcf, 40, "iterations_fit", 0), triple(mcf, 80, "iterations_fit", 0), "original run: model_comparison_by_fit.csv")
 add_item(S, "reached the iteration ceiling", all(mcf$iterations_fit[mcf$K == 40] >= n_iter_max), all(mcf$iterations_fit[mcf$K == 80] >= n_iter_max), "derived here from model_comparison_by_fit.csv")
-add_item(S, "held-out inference iterations (half A) / full held-out transform iterations, per seed", paste(triple(mcf, 40, "iterations_heldout_inference", 0), triple(mcf, 40, "iterations_heldout_full_transform", 0), sep = " ; "), paste(triple(mcf, 80, "iterations_heldout_inference", 0), triple(mcf, 80, "iterations_heldout_full_transform", 0), sep = " ; "), "delivered: model_comparison_by_fit.csv")
-add_item(S, "final pseudo log-likelihood per training token, per seed", triple(mcf, 40, "final_pseudo_loglikelihood_per_token", 4), triple(mcf, 80, "final_pseudo_loglikelihood_per_token", 4), "delivered: model_comparison_by_fit.csv")
+add_item(S, "held-out inference iterations (half A) / full held-out transform iterations, per seed", paste(triple(mcf, 40, "iterations_heldout_inference", 0), triple(mcf, 40, "iterations_heldout_full_transform", 0), sep = " ; "), paste(triple(mcf, 80, "iterations_heldout_inference", 0), triple(mcf, 80, "iterations_heldout_full_transform", 0), sep = " ; "), "original run: model_comparison_by_fit.csv")
+add_item(S, "final pseudo log-likelihood per training token, per seed", triple(mcf, 40, "final_pseudo_loglikelihood_per_token", 4), triple(mcf, 80, "final_pseudo_loglikelihood_per_token", 4), "original run: model_comparison_by_fit.csv")
 add_item(S, "relative improvement over the last 10 iterations, per seed", per_seed(function(f) trace_change(f, 1), 40, 6), per_seed(function(f) trace_change(f, 1), 80, 6), "derived here from the cached traces", "the stopping rule fires below 1e-4")
 add_item(S, "relative improvement over the last 100 iterations, per seed", per_seed(function(f) trace_change(f, 10), 40, 5), per_seed(function(f) trace_change(f, 10), 80, 5), "derived here from the cached traces")
 add_item(S, "trace checkpoints that decreased (non-monotone steps), per seed", per_seed(function(f) sum(diff(f$trace$loglikelihood) < 0), 40, 0), per_seed(function(f) sum(diff(f$trace$loglikelihood) < 0), 80, 0), "derived here from the cached traces")
 S <- "topic prevalence and concentration"
-add_item(S, "largest topic token share (training), per seed", triple(mcf, 40, "largest_topic_share", 4), triple(mcf, 80, "largest_topic_share", 4), "delivered: model_comparison_by_fit.csv", "the largest topic is a notice copy in every fit of both K")
-add_item(S, "smallest topic token share (training), per seed", triple(mcf, 40, "smallest_topic_share", 4), triple(mcf, 80, "smallest_topic_share", 4), "delivered: model_comparison_by_fit.csv")
+add_item(S, "largest topic token share (training), per seed", triple(mcf, 40, "largest_topic_share", 4), triple(mcf, 80, "largest_topic_share", 4), "original run: model_comparison_by_fit.csv", "the largest topic is a notice copy in every fit of both K")
+add_item(S, "smallest topic token share (training), per seed", triple(mcf, 40, "smallest_topic_share", 4), triple(mcf, 80, "smallest_topic_share", 4), "original run: model_comparison_by_fit.csv")
 add_item(S, "Gini coefficient of topic token shares, per seed", per_seed(function(f) gini(f$token_share), 40, 3), per_seed(function(f) gini(f$token_share), 80, 3), "derived here from the cached fits")
 add_item(S, "topics dominant in fewer than 1% of modeled documents, per seed", per_seed(function(f) sum(tabulate(f$dominant_m, f$K) < 0.01 * n_modeled), 40, 0), per_seed(function(f) sum(tabulate(f$dominant_m, f$K) < 0.01 * n_modeled), 80, 0), "derived here from the cached per-document summaries")
 add_item(S, "median share of a document's dominant topic (all modeled documents), per seed", per_seed(function(f) median(f$max_share_m), 40, 3), per_seed(function(f) median(f$max_share_m), 80, 3), "derived here from the cached per-document summaries")
 add_item(S, "share of modeled documents with a dominant share >= 0.5, per seed", per_seed(function(f) mean(f$max_share_m >= 0.5), 40, 3), per_seed(function(f) mean(f$max_share_m >= 0.5), 80, 3), "derived here from the cached per-document summaries")
 add_item(S, "mean number of active topics (share >= 0.1) per document, per seed", per_seed(function(f) mean(f$n_active_m), 40, 3), per_seed(function(f) mean(f$n_active_m), 80, 3), "derived here from the cached per-document summaries")
 cs40 <- retained_new$concentration_summary; cs80 <- retained_ref$concentration_summary
-for (b in c("5-9", "10-24", "25-49")) add_item(S, sprintf("median dominant share, documents of %s modeled tokens (seed 1)", b), sprintf("%.3f", cs40$dominant_share_median[cs40$token_band == b]), sprintf("%.3f", cs80$dominant_share_median[cs80$token_band == b]), "this package: document_concentration_summary_K040.csv; delivered: document_concentration_summary_K080.csv")
+for (b in c("5-9", "10-24", "25-49")) add_item(S, sprintf("median dominant share, documents of %s modeled tokens (seed 1)", b), sprintf("%.3f", cs40$dominant_share_median[cs40$token_band == b]), sprintf("%.3f", cs80$dominant_share_median[cs80$token_band == b]), "this package: document_concentration_summary_K040.csv; original run: document_concentration_summary_K080.csv")
 S <- "representative documents"
 rp <- representative_document_proxies
 rp_item <- function(K, fun, digits = 3) paste(vapply(fit_seeds, function(s) formatC(fun(rp[rp$K == K & rp$seed == s, ]), format = "f", digits = digits), ""), collapse = " / ")
 add_item(S, "mean topic share of the five representative documents, mean over topics, per seed", rp_item(40, function(d) mean(d$top5_mean_share)), rp_item(80, function(d) mean(d$top5_mean_share)), "derived here from representative_documents_all_models.csv")
 add_item(S, "topics whose five documents average a share below 0.5, per seed", rp_item(40, function(d) sum(d$flag_mean_share_below_0.5), 0), rp_item(80, function(d) sum(d$flag_mean_share_below_0.5), 0), "derived here")
 add_item(S, "topics with fewer than five documents dominated by the topic, per seed", rp_item(40, function(d) sum(d$flag_not_all_dominated), 0), rp_item(80, function(d) sum(d$flag_not_all_dominated), 0), "derived here")
-add_item(S, "mean count of the topic's ten top words present per document, per seed", rp_item(40, function(d) mean(d$top_10_words_present_mean)), rp_item(80, function(d) mean(d$top_10_words_present_mean)), "derived here (tokens recomputed by the delivered rules)")
+add_item(S, "mean count of the topic's ten top words present per document, per seed", rp_item(40, function(d) mean(d$top_10_words_present_mean)), rp_item(80, function(d) mean(d$top_10_words_present_mean)), "derived here (tokens recomputed with the original rules)")
 add_item(S, "topics whose documents contain on average fewer than two of the ten top words, per seed", rp_item(40, function(d) sum(d$flag_fewer_than_2_top_words_on_average), 0), rp_item(80, function(d) sum(d$flag_fewer_than_2_top_words_on_average), 0), "derived here")
 add_item(S, sprintf("topics with at least one repetitive document (type-token ratio < %.1f), per seed", repetitive_ttr), rp_item(40, function(d) sum(d$has_repetitive_document), 0), rp_item(80, function(d) sum(d$has_repetitive_document), 0), "derived here")
 add_item(S, "representative rows written by AutoModerator, per seed", rp_item(40, function(d) sum(d$automoderator_rows), 0), rp_item(80, function(d) sum(d$automoderator_rows), 0), "derived here")
 S <- "runtime and memory (fitting run, 12 workers)"
 rt <- function(K, col, digits = 0) paste(formatC(frt[[col]][frt$K == K & frt$role == "primary"][order(frt$seed[frt$K == K & frt$role == "primary"])], format = "f", digits = digits, big.mark = ","), collapse = " / ")
-add_item(S, "worker job wall seconds, per seed", rt(40, "elapsed_seconds"), rt(80, "elapsed_seconds"), "delivered: fit_runtime.csv")
-add_item(S, "fit-to-held-out-completion seconds, per seed", rt(40, "elapsed_seconds_fit_to_completion"), rt(80, "elapsed_seconds_fit_to_completion"), "delivered: fit_runtime.csv")
-add_item(S, "CPU user seconds of the job, per seed", rt(40, "cpu_user_seconds_total"), rt(80, "cpu_user_seconds_total"), "delivered: fit_runtime.csv")
-add_item(S, "seconds per fit iteration, per seed", rt(40, "seconds_per_fit_iteration", 2), rt(80, "seconds_per_fit_iteration", 2), "delivered: fit_runtime.csv")
-add_item(S, "worker peak working set MB (lifetime peak; clean per-K reading only for a worker's first job), per seed", rt(40, "process_peak_working_set_mb"), rt(80, "process_peak_working_set_mb"), "delivered: fit_runtime.csv", paste("job index in worker:", rt(40, "job_index_in_worker"), "|", rt(80, "job_index_in_worker")))
-add_item(S, "cached theta file size (MB, uncompressed; all modeled documents x K)", sprintf("%.0f", file.size(theta_files[["40"]]) / 1024^2), sprintf("%.0f", file.size(theta_files[["80"]]) / 1024^2), "file sizes on disk", "document-topic table sizes are in preservation_status.csv and the delivered manifests")
-S <- "retention rule (delivered) and selection"
-add_item(S, "composite rank (mean of the four ranks; lowest wins)", single(mcs, 40, "composite_rank", 2), single(mcs, 80, "composite_rank", 2), "delivered: model_comparison_summary.csv")
-add_item(S, "retained by the delivered rule; basis", sprintf("%s; %s", mcs$retained[mcs$K == 40], coalesce(mcs$retention_basis[mcs$K == 40], "")), sprintf("%s; %s", mcs$retained[mcs$K == 80], coalesce(mcs$retention_basis[mcs$K == 80], "")), "delivered: model_comparison_summary.csv")
-add_item(S, "status in this package", "user-selected candidate representation; retained outputs written here", "user-selected candidate representation; delivered retained outputs unchanged and hash-verified", "this package")
+add_item(S, "worker job wall seconds, per seed", rt(40, "elapsed_seconds"), rt(80, "elapsed_seconds"), "original run: fit_runtime.csv")
+add_item(S, "fit-to-held-out-completion seconds, per seed", rt(40, "elapsed_seconds_fit_to_completion"), rt(80, "elapsed_seconds_fit_to_completion"), "original run: fit_runtime.csv")
+add_item(S, "CPU user seconds of the job, per seed", rt(40, "cpu_user_seconds_total"), rt(80, "cpu_user_seconds_total"), "original run: fit_runtime.csv")
+add_item(S, "seconds per fit iteration, per seed", rt(40, "seconds_per_fit_iteration", 2), rt(80, "seconds_per_fit_iteration", 2), "original run: fit_runtime.csv")
+add_item(S, "worker peak working set MB (lifetime peak; clean per-K reading only for a worker's first job), per seed", rt(40, "process_peak_working_set_mb"), rt(80, "process_peak_working_set_mb"), "original run: fit_runtime.csv", paste("job index in worker:", rt(40, "job_index_in_worker"), "|", rt(80, "job_index_in_worker")))
+add_item(S, "cached theta file size (MB, uncompressed; all modeled documents x K)", sprintf("%.0f", file.size(theta_files[["40"]]) / 1024^2), sprintf("%.0f", file.size(theta_files[["80"]]) / 1024^2), "file sizes on disk", "document-topic table sizes are in preservation_status.csv and the existing manifests")
+S <- "retention rule (original run) and selection"
+add_item(S, "composite rank (mean of the four ranks; lowest wins)", single(mcs, 40, "composite_rank", 2), single(mcs, 80, "composite_rank", 2), "original run: model_comparison_summary.csv")
+add_item(S, "retained by the original rule; basis", sprintf("%s; %s", mcs$retained[mcs$K == 40], coalesce(mcs$retention_basis[mcs$K == 40], "")), sprintf("%s; %s", mcs$retained[mcs$K == 80], coalesce(mcs$retention_basis[mcs$K == 80], "")), "original run: model_comparison_summary.csv")
+add_item(S, "status in this package", "selected candidate representation; retained outputs written here", "selected candidate representation; existing retained outputs unchanged and hash-verified", "this package")
 S <- "cross-K correspondence (seed 1; cosine of topic-word distributions)"
 cc <- topic_correspondence_K040; pp <- topic_predecessors_K080
 add_item(S, "K = 40 topics with one K = 80 counterpart at >= 0.5 / with two or more (split) / with none", sprintf("%d / %d / %d", sum(cc$n_K080_topics_at_or_above_0.5 == 1), sum(cc$n_K080_topics_at_or_above_0.5 >= 2), sum(cc$n_K080_topics_at_or_above_0.5 == 0)), "", "this package: topic_correspondence_K040_to_K080.csv")
@@ -965,13 +848,7 @@ comparison_summary <- bind_rows(cmp)
 mark_stage("comparison_summary")
 
 # ---- Figures ----
-# INPUT : the K = 40 retained tables; the cross-K matrices.
-# DOES  : the nine retained-model figures of the delivered run for K = 40 (the
-#         delivered figure code, unchanged) and two cross-K matrices. Every
-#         figure carries a title, axis titles, tick labels and a legend where a
-#         colour scale is shown; every topic x topic figure names the quantity
-#         it shows.
-# OUTPUT: figures/*.png.
+# The original run's nine retained-model figures for K = 40 (same figure code) and two cross-K matrices.
 ink_series   <- "#2a78d6"
 ink_series_2 <- "#eb6834"
 ink_red      <- "#e34948"
@@ -1126,32 +1003,26 @@ mark_stage("figures")
 log_line("figures written")
 
 # ---- Validation checks ----
-# INPUT : everything above.
-# DOES  : integrity of the inputs; agreement of the recomputed stability and
-#         representative documents with the delivered tables; the K = 80
-#         reproduction hashes; the delivered script's own retained-model checks
-#         applied to K = 40; the cross-K, notice and inspection tables'
-#         structure. The script stops before writing any other table if a
-#         check fails.
-# OUTPUT: validation_checks.
+# Input integrity, agreement with the earlier tables, K = 80 reproduction hashes, the original retained-model
+# checks applied to K = 40, and structure of the cross-K, notice and inspection tables.
 checks <- list()
 add_check <- function(check, detail, pass) checks[[length(checks) + 1L]] <<- tibble(check = check, detail = detail, pass = isTRUE(pass))
-add_check("inputs: every delivered table and every cached model file read here has the SHA256 recorded in its delivered manifest (the delivered outputs and the cache are unchanged)",
+add_check("inputs: every earlier table and cached model file read here has the SHA256 recorded in its manifest (existing outputs and cache unchanged)",
           sprintf("%d of %d files match", sum(input_integrity$hash_equals_manifest), nrow(input_integrity)), all(input_integrity$hash_equals_manifest))
-add_check("stability: the cross-seed matching recomputed here for K = 40 and K = 80 equals the delivered stability_pairs.csv (assignments identical; cosines, Jaccard, best any-topic cosine and ARI equal to 1e-9); every assignment is a permutation",
+add_check("stability: the cross-seed matching recomputed here for K = 40 and K = 80 equals the earlier stability_pairs.csv (assignments identical; cosines, Jaccard, best any-topic cosine and ARI equal to 1e-9); every assignment is a permutation",
           sprintf("agrees %s; %d of %d permutations", stability_agrees, sum(stability_assignment_ok), length(stability_assignment_ok)), stability_agrees && all(stability_assignment_ok))
-sts_delivered <- delivered$topic_stability_seed1_all_k |> filter(K %in% selected_k) |> arrange(K, topic_a)
+sts_saved <- saved$topic_stability_seed1_all_k |> filter(K %in% selected_k) |> arrange(K, topic_a)
 sts_here <- seed1_topic_stability |> arrange(K, topic_a)
-add_check("stability: the seed-1 topic reproducibility table recomputed here equals the delivered topic_stability_seed1_all_k.csv for K = 40 and 80",
-          sprintf("%d rows; max cosine difference %g", nrow(sts_here), max(abs(sts_delivered$weaker_matched_cosine - sts_here$weaker_matched_cosine), abs(sts_delivered$stronger_matched_cosine - sts_here$stronger_matched_cosine))),
-          nrow(sts_delivered) == nrow(sts_here) && max(abs(sts_delivered$weaker_matched_cosine - sts_here$weaker_matched_cosine)) < 1e-9 &&
-            identical(sts_delivered$reproduced_in_all_other_seeds, sts_here$reproduced_in_all_other_seeds) && identical(sts_delivered$reproduced_in_no_other_seed, sts_here$reproduced_in_no_other_seed))
-add_check("representative documents: the rows rebuilt here from the workers' indices for the six fits equal the delivered representative_documents_all_models.csv rows (doc_key, text, share, dominant topic)",
+add_check("stability: the seed-1 topic reproducibility table recomputed here equals the earlier topic_stability_seed1_all_k.csv for K = 40 and 80",
+          sprintf("%d rows; max cosine difference %g", nrow(sts_here), max(abs(sts_saved$weaker_matched_cosine - sts_here$weaker_matched_cosine), abs(sts_saved$stronger_matched_cosine - sts_here$stronger_matched_cosine))),
+          nrow(sts_saved) == nrow(sts_here) && max(abs(sts_saved$weaker_matched_cosine - sts_here$weaker_matched_cosine)) < 1e-9 &&
+            identical(sts_saved$reproduced_in_all_other_seeds, sts_here$reproduced_in_all_other_seeds) && identical(sts_saved$reproduced_in_no_other_seed, sts_here$reproduced_in_no_other_seed))
+add_check("representative documents: the rows rebuilt here from the workers' indices for the six fits equal the earlier representative_documents_all_models.csv rows (doc_key, text, share, dominant topic)",
           sprintf("%d rows; agrees %s", nrow(rd_here), representative_agrees), representative_agrees)
-add_check("K = 80 reproduction: every delivered K = 80 retained table regenerated here has the SHA256 recorded in its delivered manifest, and every delivered file on disk equals its manifest",
-          sprintf("%d of %d regenerated tables equal the manifests; %d of %d delivered files equal the manifests", sum(k80_reproduction$regenerated_equals_manifest), nrow(k80_reproduction),
-                  sum(k80_reproduction$delivered_file_equals_manifest), nrow(k80_reproduction)),
-          all(k80_reproduction$regenerated_equals_manifest) && all(k80_reproduction$delivered_file_equals_manifest))
+add_check("K = 80 reproduction: every K = 80 retained table regenerated here has the SHA256 recorded in its manifest, and every existing file on disk equals its manifest",
+          sprintf("%d of %d regenerated tables equal the manifests; %d of %d existing files equal the manifests", sum(k80_reproduction$regenerated_equals_manifest), nrow(k80_reproduction),
+                  sum(k80_reproduction$saved_file_equals_manifest), nrow(k80_reproduction)),
+          all(k80_reproduction$regenerated_equals_manifest) && all(k80_reproduction$saved_file_equals_manifest))
 for (rr in list(retained_ref, retained_new)) {
   add_check(sprintf("%s: theta file from the worker is consistent (doc keys in modeled order, K, seed, sampler index, dimensions) and its per-document summaries equal the worker's", rr$tag),
             sprintf("file consistent %s; summaries identical %s", rr$theta_file_consistent, rr$worker_summaries_identical), rr$theta_file_consistent && rr$worker_summaries_identical)
@@ -1211,11 +1082,11 @@ add_check(sprintf("%s: the two cross-seed matrices have K x K rows, cosines in [
           sprintf("rows %s; matched cells %s", paste(vapply(r$stability_matrices, nrow, 1L), collapse = ", "), paste(unlist(sm40), collapse = ", ")),
           all(vapply(r$stability_matrices, nrow, 1L) == K * K) && all(unlist(sm40) == K) &&
             all(vapply(r$stability_matrices, function(m) all(m$cosine >= 0 & m$cosine <= 1 + 1e-9) && n_distinct(m$seed_b_topic[m$matched]) == K, logical(1))))
-tp_delivered <- delivered$topic_prevalence_all_models |> filter(K %in% selected_k) |> arrange(K, seed, topic)
+tp_saved <- saved$topic_prevalence_all_models |> filter(K %in% selected_k) |> arrange(K, seed, topic)
 tp_here <- bind_rows(lapply(fits, function(f) tibble(K = f$K, seed = f$seed, topic = seq_len(f$K), token_share = f$token_share, words = paste_top(f, f$top_probability)))) |> arrange(K, seed, topic)
-add_check("the cached fits agree with the delivered topic_prevalence_all_models.csv for the six fits (training token shares to 1e-9; the ten-word strings identical)",
-          sprintf("%d rows; max share difference %g; %d of %d word strings identical", nrow(tp_here), max(abs(tp_delivered$token_share - tp_here$token_share)), sum(tp_delivered$top_10_words_by_probability == tp_here$words), nrow(tp_here)),
-          nrow(tp_delivered) == nrow(tp_here) && max(abs(tp_delivered$token_share - tp_here$token_share)) < 1e-9 && all(tp_delivered$top_10_words_by_probability == tp_here$words))
+add_check("the cached fits agree with the earlier topic_prevalence_all_models.csv for the six fits (training token shares to 1e-9; the ten-word strings identical)",
+          sprintf("%d rows; max share difference %g; %d of %d word strings identical", nrow(tp_here), max(abs(tp_saved$token_share - tp_here$token_share)), sum(tp_saved$top_10_words_by_probability == tp_here$words), nrow(tp_here)),
+          nrow(tp_saved) == nrow(tp_here) && max(abs(tp_saved$token_share - tp_here$token_share)) < 1e-9 && all(tp_saved$top_10_words_by_probability == tp_here$words))
 add_check("cross-K: the seed-1 cosine matrix is 40 x 80 with values in [0, 1]; the long table has 40 x 80 x 9 rows; the wide table has 40 rows and 80 topic columns; the dominant-topic cross-tabulation sums to the modeled documents with row and column sums equal to the two topic summaries' dominant counts",
           sprintf("%d x %d; range %.4f..%.4f; long %d rows; wide %d x %d; crosstab sum %d", nrow(cross_cos), ncol(cross_cos), min(cross_cos), max(cross_cos), nrow(cross_k_all_seed_pairs), nrow(cross_k_wide), ncol(cross_k_wide) - 2, sum(crosstab)),
           identical(dim(cross_cos), c(k_new, k_reference)) && all(cross_cos >= 0 & cross_cos <= 1 + 1e-9) && nrow(cross_k_all_seed_pairs) == k_new * k_reference * length(fit_seeds)^2 &&
@@ -1234,7 +1105,7 @@ add_check("cross-K: every K = 40 topic and every K = 80 topic appears exactly on
             nrow(topic_correspondence_K040) == k_new && nrow(topic_predecessors_K080) == k_reference &&
             all(topic_correspondence_K040$best_cosine == apply(cross_cos, 1, max)) && sum(topic_correspondence_K040$n_K080_topics_at_or_above_0.5) == sum(cross_cos >= correspondence_threshold))
 notice_gap_ok <- all(vapply(names(fits), function(k) { cs <- notice_cos[[k]]; h <- is_notice[[k]]; all(cs[h] >= 0.99) && all(cs[!h] < 0.5) && sum(h) >= 1 }, logical(1)))
-add_check(sprintf("notice copies: in each of the six fits the topics at cosine >= %.2f to the anchor are all at >= 0.99 and every other topic is below 0.5; the K = 80 seed-1 copies are Topics 1, 2 and 80 as the delivered README states; K = 40 seed 1 has one copy", notice_threshold),
+add_check(sprintf("notice copies: in each of the six fits the topics at cosine >= %.2f to the anchor are all at >= 0.99 and every other topic is below 0.5; the K = 80 seed-1 copies are Topics 1, 2 and 80 as the original README states; K = 40 seed 1 has one copy", notice_threshold),
           sprintf("gap holds in all fits %s; K = 80 seed 1 copies: %s; K = 40 seed 1 copies: %s", notice_gap_ok, paste(which(is_notice[[fit_key(k_reference, 1L)]]), collapse = ", "), paste(which(is_notice[[fit_key(k_new, 1L)]]), collapse = ", ")),
           notice_gap_ok && identical(which(is_notice[[fit_key(k_reference, 1L)]]), c(1L, 2L, 80L)) && identical(which(is_notice[[fit_key(k_new, 1L)]]), 1L) &&
             nrow(notice_summary) == length(fits) && sum(notice_summary$notice_copies) == nrow(notice_topics))
@@ -1247,9 +1118,7 @@ print(as.data.frame(validation_checks[, c("check", "pass")]), right = FALSE)
 mark_stage("validation")
 
 # ---- Write tables ----
-# INPUT : the objects above.
-# DOES  : one CSV per table; stop before writing anything else if a check failed.
-# OUTPUT: CSV files under tables/.
+# One CSV per table; stops before writing anything else if a check failed.
 table_dims <- list()
 write_table <- function(tbl, name) {
   path <- file.path(tab_dir, name)
@@ -1278,8 +1147,8 @@ write_table(top_words_probability,                 "top_words_by_probability_K04
 write_table(top_words_relevance,                   "top_words_by_relevance_K040_K080.csv")
 write_table(stability_pairs,                       "stability_pairs_K040_K080.csv")
 write_table(seed1_topic_stability,                 "topic_stability_seed1_K040_K080.csv")
-fit_diagnostics <- delivered$model_comparison_by_fit |> filter(K %in% selected_k) |>
-  left_join(delivered$fit_runtime |> filter(role == "primary") |> select(K, seed, pid, worker, job_index_in_worker, start_utc, end_utc, cpu_user_seconds_total,
+fit_diagnostics <- saved$model_comparison_by_fit |> filter(K %in% selected_k) |>
+  left_join(saved$fit_runtime |> filter(role == "primary") |> select(K, seed, pid, worker, job_index_in_worker, start_utc, end_utc, cpu_user_seconds_total,
                                                                           process_peak_working_set_mb, seconds_per_fit_iteration, seconds_fit_transform, from_cache), by = c("K", "seed")) |>
   arrange(K, seed)
 write_table(fit_diagnostics,                       "fit_diagnostics_K040_K080.csv")
@@ -1287,43 +1156,38 @@ write_table(k80_reproduction,                      "k80_reproduction_check.csv")
 write_table(input_integrity,                       "input_integrity.csv")
 parameters_table <- tribble(
   ~parameter, ~value,
-  "selected_k (user-selected candidate representations)", paste(selected_k, collapse = ", "),
+  "selected_k (candidate representations carried forward)", paste(selected_k, collapse = ", "),
   "k_new (retained outputs written here)", as.character(k_new),
-  "k_reference (delivered retained outputs reproduced in scratch and hash-checked; not written)", as.character(k_reference),
+  "k_reference (existing retained outputs reproduced in scratch and hash-checked; not written)", as.character(k_reference),
   "primary seed", as.character(fit_seeds[1]),
   "correspondence measure", "cosine similarity of smoothed topic-word distributions (phi rows) between a K = 40 topic and a K = 80 topic",
   "correspondence_threshold", as.character(correspondence_threshold),
-  "clear_threshold (= the delivered stability_cosine_threshold)", as.character(clear_threshold),
-  "notice anchor", sprintf("K = %d seed %d Topic %d of the delivered run", notice_anchor$K, notice_anchor$seed, notice_anchor$topic),
+  "clear_threshold (= the original stability_cosine_threshold)", as.character(clear_threshold),
+  "notice anchor", sprintf("K = %d seed %d Topic %d of the original run", notice_anchor$K, notice_anchor$seed, notice_anchor$topic),
   "notice_threshold (cosine to the anchor)", as.character(notice_threshold),
   "repetitive document rule (type-token ratio below)", as.character(repetitive_ttr),
-  "delivered run script", main_script_path,
-  "delivered run script SHA256 (as on disk now)", sha256(main_script_path),
-  "delivered fitting run id", delivered$parameters$value[delivered$parameters$parameter == "fitting_run_id"],
+  "original run script", main_script_path,
+  "original run script SHA256 (as on disk now)", sha256(main_script_path),
+  "original fitting run id", saved$parameters$value[saved$parameters$parameter == "fitting_run_id"],
   "model cache run key", readLines(file.path(model_dir, "run_key.txt"), warn = FALSE)[1],
-  "alpha_sum / beta / n_iter_max / convergence_tol / heldout_share / split_seed (delivered, unchanged)", sprintf("%s / %s / %s / %s / %s / %s", alpha_sum, beta, n_iter_max, convergence_tol, heldout_share, split_seed),
-  "min_token_chars / min_document_frequency / max_document_share / stopword_source (delivered, unchanged)", sprintf("%s / %s / %s / %s", min_token_chars, min_document_frequency, max_document_share, stopword_source),
-  "n_top_words / coherence_top_n / relevance_lambda / n_representative / representative_min_tokens / active_topic_threshold (delivered, unchanged)", sprintf("%s / %s / %s / %s / %s / %s", n_top_words, coherence_top_n, relevance_lambda, n_representative, representative_min_tokens, active_topic_threshold),
+  "alpha_sum / beta / n_iter_max / convergence_tol / heldout_share / split_seed (original values, unchanged)", sprintf("%s / %s / %s / %s / %s / %s", alpha_sum, beta, n_iter_max, convergence_tol, heldout_share, split_seed),
+  "min_token_chars / min_document_frequency / max_document_share / stopword_source (original values, unchanged)", sprintf("%s / %s / %s / %s", min_token_chars, min_document_frequency, max_document_share, stopword_source),
+  "n_top_words / coherence_top_n / relevance_lambda / n_representative / representative_min_tokens / active_topic_threshold (original values, unchanged)", sprintf("%s / %s / %s / %s / %s / %s", n_top_words, coherence_top_n, relevance_lambda, n_representative, representative_min_tokens, active_topic_threshold),
   "models re-fitted here", "0")
 write_table(parameters_table, "parameters.csv")
 mark_stage("tables")
 
 # ---- Preservation status, run record, provenance sidecars ----
-# INPUT : the files written; the source files and model files read.
-# DOES  : record for every output whether it is tracked by git (the K = 40
-#         document-topic table is git-ignored like the delivered ones) and which
-#         cached objects it depends on; the stage timings; one manifest per
-#         output in the delivered format (input hashes including the cached
-#         model files, this script's hash, git commit, parameters, packages).
-# OUTPUT: tables/preservation_status.csv, stage_timings.csv, run_info.csv; *.manifest.yml.
+# Git-tracking status and cache dependencies of each output (the K = 40 document-topic table is git-ignored
+# like the earlier ones), stage timings, and one manifest per output in the same format as before.
 git_ignored <- function(path) { out <- tryCatch(system2("git", c("-C", project_dir, "check-ignore", "-q", shQuote(path)), stdout = FALSE, stderr = FALSE), error = function(e) 1L); identical(out, 0L) }
 depends_on <- function(name) {
   if (grepl("^document_topic_distribution_K040|^document_concentration|^topic_correlation_K040|^topic_prevalence_by|^topic_summary_K040|^topic_coactivation_K040", name)) "theta_K040_seed1.rds and fit_K040_seed1..3.rds (cache); source Parquet for identifiers"
   else if (grepl("^cross_k_topic_pairs|^correspondence_|^figc", name)) "theta_K040_seed1.rds, theta_K080_seed1.rds and the six fit_*.rds (cache); source Parquet for the documents"
-  else if (grepl("^k80_reproduction|^input_integrity", name)) "the cache and the delivered tables (hash comparison)"
-  else if (grepl("^comparison_summary|^representative_document_proxies|^notice_", name)) "the six fit_*.rds and fit_K010_seed1.rds (cache); the delivered tables"
+  else if (grepl("^k80_reproduction|^input_integrity", name)) "the cache and the earlier tables (hash comparison)"
+  else if (grepl("^comparison_summary|^representative_document_proxies|^notice_", name)) "the six fit_*.rds and fit_K010_seed1.rds (cache); the earlier tables"
   else if (grepl("^topic_word_distribution_K040|^topic_word_cosine_K040|^stability_|^cross_k_topic_word_cosine|^topic_correspondence|^topic_predecessors|^top_words|^topic_stability|^fig(4|5|9|11)_", name)) "fit_*.rds topic-word counts (cache); the committed topic_word_distribution tables carry the same phi at 6 significant digits"
-  else if (grepl("^fit_diagnostics|^parameters|^validation|^preservation|^stage_timings|^run_info", name)) "delivered tables and this run's record"
+  else if (grepl("^fit_diagnostics|^parameters|^validation|^preservation|^stage_timings|^run_info", name)) "earlier tables and this run's record"
   else "theta_K040_seed1.rds (cache)"
 }
 outputs_written <- c(list.files(tab_dir, pattern = "\\.csv$", full.names = TRUE), list.files(fig_dir, pattern = "\\.png$", full.names = TRUE))
@@ -1346,7 +1210,7 @@ run_info <- bind_rows(
   stage_timings |> transmute(item = paste0("stage_seconds_", stage), value = as.character(seconds)),
   tibble(item = "this_run_id", value = run_id),
   tibble(item = "models_fitted_in_this_run", value = "0"),
-  tibble(item = "delivered_fitting_run_id", value = delivered$parameters$value[delivered$parameters$parameter == "fitting_run_id"]),
+  tibble(item = "saved_fitting_run_id", value = saved$parameters$value[saved$parameters$parameter == "fitting_run_id"]),
   tibble(item = "models_dir_bytes", value = as.character(sum(file.size(list.files(model_dir, pattern = "\\.rds$", full.names = TRUE))))),
   tibble(item = "tables_written", value = as.character(length(list.files(tab_dir, pattern = "\\.csv$")) + 1L)),
   tibble(item = "figures_written", value = as.character(length(list.files(fig_dir, pattern = "\\.png$")))),
@@ -1360,11 +1224,11 @@ input_files <- c(lapply(c(comment_files, submission_files), function(p) list(pat
                  list(list(path = stopword_workbook, hash = workbook_hash, format = "xlsx", rows = nrow(tier2_raw), cols = ncol(tier2_raw), sheet = stopword_sheet)),
                  lapply(seq_len(nrow(input_integrity)), function(i) list(path = input_integrity$path[i], hash = input_integrity$sha256_now[i],
                                                                         format = tolower(tools::file_ext(input_integrity$path[i])),
-                                                                        role = if (grepl("\\.rds$", input_integrity$path[i])) "cached fit of the delivered Tier 2 run, read-only" else "delivered Tier 2 table, read-only")))
+                                                                        role = if (grepl("\\.rds$", input_integrity$path[i])) "cached fit of the original Tier 2 run, read-only" else "Tier 2 table from the original run, read-only")))
 manifest_parameters <- c(
-  list(purpose = "K = 40 promoted to retained-output status (the delivered K = 80 arithmetic applied to the cached K = 40 fit) and the K = 40 versus K = 80 comparison package; no model re-fitted; delivered outputs unchanged",
+  list(purpose = "K = 40 promoted to retained-output status (the original K = 80 arithmetic applied to the cached K = 40 fit) and the K = 40 versus K = 80 comparison package; no model re-fitted; existing outputs unchanged",
        correspondence_measure = "cosine similarity of smoothed topic-word distributions (phi rows) between a K = 40 topic and a K = 80 topic; supporting: Jaccard of top-20 words, Pearson correlation of document shares, dominant-topic cross-tabulation",
-       delivered_run = "july2026_politics_lda_topics_tier2.R; text processing, split, retained-model tables and figures copied unchanged"),
+       saved_run = "july2026_politics_lda_topics_tier2.R; text processing, split, retained-model tables and figures copied unchanged"),
   setNames(as.list(parameters_table$value), parameters_table$parameter))
 write_sidecar <- function(output) {
   ext <- tolower(tools::file_ext(output))
@@ -1382,7 +1246,7 @@ write_sidecar <- function(output) {
                             packages = package_versions, os = paste(Sys.info()[["sysname"]], Sys.info()[["release"]]))
   manifest$seed      <- fit_seeds[1]
   manifest$timestamp <- format(Sys.time(), "%Y-%m-%dT%H:%M:%SZ", tz = "UTC")
-  manifest$notes     <- "Phase 1A LDA, Tier 2 (310-word) stopword condition: K = 40 retained-model outputs and the K = 40 versus K = 80 comparison, built from the cached fits of the delivered run (no re-fit); source Parquet, the workbook, the delivered tables and the cache read-only."
+  manifest$notes     <- "Phase 1A LDA, Tier 2 (310-word) stopword condition: K = 40 retained-model outputs and the K = 40 versus K = 80 comparison, built from the cached fits of the original run (no re-fit); source Parquet, the workbook, the earlier tables and the cache read-only."
   write_yaml(manifest, paste0(output, ".manifest.yml"))
 }
 invisible(lapply(list.files(tab_dir, pattern = "\\.csv$", full.names = TRUE), write_sidecar))

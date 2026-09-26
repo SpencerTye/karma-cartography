@@ -1,54 +1,13 @@
-# pipeline - Phase 1: the Reddit message-event foundation
-#
-# PURPOSE
-#   Build one canonical, reusable table in which every Reddit submission and every
-#   comment of the collected dataset is one row (one "message event"), keeping every
-#   source field exactly as stored, the established project linkage key (doc_key), the
-#   thread and parent relationships exactly as the source identifiers support them, and
-#   the provenance needed to trace any row back to the original Parquet record. The
-#   script then validates that table extensively and records how it was produced.
-#
-#   This phase is data foundation and validation only. It performs no topic modelling,
-#   embedding, clustering, coordination or network analysis, no stopword or token
-#   filtering, no author normalisation and no interpretation. Nothing is dropped.
-#
-# HOW TO RUN (from any working directory; the project root is found from this file's
-# location, or set PHASE1_PROJECT_DIR explicitly):
-#   Rscript "pipeline/phase1_message_event_foundation/scripts/phase1_build_message_events.R"
-#   Rscript "pipeline/phase1_message_event_foundation/scripts/phase1_build_message_events.R"
-# Unit test of the pure functions (does not run the pipeline):
-#   Rscript "pipeline/phase1_message_event_foundation/tests/test_phase1_functions.R"
-#
-# PARAMETERS (environment variables; every one has a documented default)
-#   PHASE1_PROJECT_DIR      project root (default: four folders above this script)
-#   PHASE1_COMMENTS_DIR     folder of the comment Parquet files    (default: <root>/data_sample/comments/2026-07)
-#   PHASE1_SUBMISSIONS_DIR  folder of the submission Parquet files (default: <root>/data_sample/submissions/2026-07)
-#   PHASE1_COMPRESSION      Parquet codec for the canonical table: zstd (default), snappy, gzip, uncompressed
-#   PHASE1_COMPRESSION_LEVEL codec level for zstd / gzip (default 3). NOTE: nanoparquet 0.5.1 writes zstd pages
-#                           uncompressed (ratio 1.00) when no level is given, so the level is always passed
-#                           explicitly; measured on this dataset: zstd 3 = 2.9x, zstd 9 = 3.2x, gzip 6 = 2.7x
-#   PHASE1_ROW_GROUP_ROWS   rows per Parquet row group; empty (default) = nanoparquet's default, one row group here
-#   PHASE1_INVENTORY_DIR    folder of the earlier metadata-inventory tables used for reconciliation
-#                           (default: <root>/r_analysis_outputs/metadata_inventory/tables; skipped if absent)
-#   PHASE1_TIER2_TABLE      the earlier delivered document table for the full-population cross-check
-#                           (default: <root>/r_analysis_outputs/lda_topics_tier2/tables/document_topic_distribution_K080.csv; skipped if absent)
-#
-# OUTPUTS (all under pipeline/phase1_message_event_foundation/; the script
-# owns these folders and removes the files it writes - .parquet, .csv, .png, .txt, .yml -
-# at the start of every run)
-#   derived/message_events.parquet      the canonical table (+ .manifest.yml provenance sidecar)
-#   qc/tables/*.csv                     QC, linkage, coverage and reconciliation tables (+ sidecars)
-#   qc/figures/*.png                    QC figures (+ sidecars)
-#   environment/*                       run record, stage timings, resource use, packages, sessionInfo
-#
-# SOURCE DATA ARE READ ONLY. Their SHA256 hashes are taken before and after the run and
-# compared; the comparison is one of the recorded checks.
+# Phase 1: build the canonical Reddit message-event table (one row per submission or comment)
+# with doc_key, thread and parent linkage, and provenance back to the source Parquet row, then QC it.
+# Inputs: comment and submission Parquet files; optional metadata-inventory tables and Tier 2 document table.
+# Outputs (under pipeline/phase1_message_event_foundation/): derived/message_events.parquet, qc/tables/*.csv,
+#   qc/figures/*.png and environment/* run records, each with a .manifest.yml sidecar. Source files are read only.
+# Env: PHASE1_PROJECT_DIR, PHASE1_COMMENTS_DIR, PHASE1_SUBMISSIONS_DIR, PHASE1_COMPRESSION (zstd),
+#   PHASE1_COMPRESSION_LEVEL (3), PHASE1_ROW_GROUP_ROWS, PHASE1_INVENTORY_DIR, PHASE1_TIER2_TABLE.
 
 # ---- Setup: packages, timing, project root, parameters, output folders ----------------
-# INPUT : environment variables listed above.
-# DOES  : load packages; start the clock and the memory record; resolve every path;
-#         create the output folders and clear the file types this script writes.
-# OUTPUT: path and parameter objects; empty output folders.
+# Resolve paths, create output folders and clear the file types this script writes.
 suppressPackageStartupMessages({
   library(nanoparquet); library(dplyr); library(tidyr); library(stringi); library(readr)
   library(ggplot2); library(scales); library(digest); library(yaml); library(jsonlite); library(ps)
@@ -120,13 +79,8 @@ relative_path <- function(path, root) {
 log_line("Phase 1 start; project root:", project_dir)
 
 # ---- Functions: the transformation and the summaries (pure; unit-tested) --------------
-# INPUT : data frames as read from the source files (plus source_file / source_row_in_file).
-# DOES  : define the functions that build the canonical table and the QC summaries. They
-#         are defined here, before any data are read, so that tests/test_phase1_functions.R
-#         can evaluate exactly these definitions on a synthetic fixture.
-# OUTPUT: functions make_doc_key, read_source_records, build_message_events,
-#         summarise_threads, summarise_authors, linkage_summary, field_coverage,
-#         count_platform_markers.
+# Defined before any data are read so tests/test_phase1_functions.R can evaluate these
+# definitions on a synthetic fixture.
 
 # doc_key: the Reddit "fullname" and the project's established document key
 # ('t1_' + comment id, 't3_' + submission id). The two id spaces cannot collide.
@@ -317,12 +271,8 @@ count_platform_markers <- function(events, marker_strings = c("[deleted]", "[rem
 }
 
 # ---- Source files before reading: hashes, footer facts, declared schemas, ingest sidecars ----
-# INPUT : the comment and submission Parquet files; the manifest.jsonl ingest sidecars.
-# DOES  : hash every source file (the "before" hash); read the Parquet footers (row counts,
-#         columns, row groups, writer) and the declared schema of every file without reading
-#         data; parse the ingest sidecars so their row counts, byte sizes and time ranges can
-#         be compared with the files' contents.
-# OUTPUT: source_files; source_schema; ingest_manifest; comment_schemas_identical.
+# Hash every source file (the "before" hash), read footers and declared schemas without
+# reading data, and parse the manifest.jsonl ingest sidecars for later comparison.
 list_to_chr <- function(x) vapply(x, function(v) if (is.null(v) || length(v) == 0L) NA_character_ else paste(unlist(v), collapse = " "), character(1))
 schema_of <- function(path, record_type) {
   s <- as.data.frame(read_parquet_schema(path)); s <- s[!is.na(s$type), , drop = FALSE]
@@ -357,10 +307,7 @@ mark_stage("source_files")
 log_line("source files:", nrow(source_files), "Parquet files hashed;", nrow(ingest_manifest), "ingest manifest rows")
 
 # ---- Read the source records ----------------------------------------------------------
-# INPUT : the Parquet files.
-# DOES  : read every file (all columns, all rows) and tag rows with file and row number.
-#         Nothing is cast, trimmed, deduplicated or dropped.
-# OUTPUT: comments; submissions; per-file row counts appended to source_files.
+# All columns and rows, tagged with file and row number. Nothing is cast or dropped.
 comments    <- read_source_records(comment_files, project_dir)
 submissions <- read_source_records(submission_files, project_dir)
 expected_comment_fields    <- c("id", "parent_id", "link_id", "author", "body", "created_utc", "retrieved_on", "score", "subreddit", "subreddit_id", "raw_json")
@@ -379,23 +326,16 @@ mark_stage("read")
 log_line("read:", n_c, "comments,", n_s, "submissions")
 
 # ---- Build the canonical message-event table ------------------------------------------
-# INPUT : comments; submissions.
-# DOES  : build_message_events() (rules documented at the function).
-# OUTPUT: events (one row per source record, 29 columns).
+# Rules are documented at build_message_events(); one row per source record, 29 columns.
 events <- build_message_events(comments, submissions)
 n_events <- nrow(events)
 mark_stage("build")
 log_line("built:", n_events, "events;", ncol(events), "columns")
 
 # ---- Write the canonical table and prove the round trip -------------------------------
-# INPUT : events.
-# DOES  : write derived/message_events.parquet with nanoparquet (codec = PHASE1_COMPRESSION;
-#         INT64 for the epoch and count fields to match the source's declared types; DOUBLE
-#         for upvote_ratio; STRING, BOOLEAN, TIMESTAMP, DATE, INT32 for the rest; constant
-#         descriptive key-value metadata so that identical inputs give identical bytes);
-#         read the file back and compare every column with the in-memory table (missing
-#         pattern and values), plus the R class and the declared Parquet type.
-# OUTPUT: message_events.parquet; parquet_roundtrip; written_schema.
+# Epoch and count fields are INT64 to match the source types; the key-value metadata is
+# constant so identical inputs give identical bytes. The file is read back and compared
+# column by column with the in-memory table.
 # The codec level is passed explicitly: with the default (NA) level, nanoparquet 0.5.1 declares the zstd
 # codec but stores every page uncompressed (verified on this dataset: 381 MB against 14.7 MB per 173k-row
 # file at level 3). Levels apply to zstd and gzip; snappy and uncompressed ignore them.
@@ -432,9 +372,7 @@ mark_stage("write_and_roundtrip")
 log_line("written:", relative_path(events_path, project_dir), sprintf("(%.1f MB);", parquet_bytes / 2^20), "round trip", if (roundtrip_ok) "exact" else "DIFFERS")
 
 # ---- QC: counts, mapping, uniqueness, coverage, markers, linkage, threads, authors, time ----
-# INPUT : events; comments; submissions; source_files.
-# DOES  : the QC measurements listed in the README, every one over all records.
-# OUTPUT: the QC tables written below.
+# The QC measurements listed in the README, each over all records.
 cm <- events |> filter(record_type == "comment"); sb <- events |> filter(record_type == "submission")
 record_counts <- bind_rows(
   source_files |> transmute(item = paste0("source rows: ", file), record_type, value = rows_read),
@@ -516,13 +454,9 @@ mark_stage("qc")
 log_line("qc: coverage", nrow(coverage), "rows;", nrow(threads), "threads;", nrow(authors), "authors")
 
 # ---- Reconciliation with the verified project artifacts -------------------------------
-# INPUT : the metadata-inventory tables (optional), the values written in the earlier
-#         reports (literals below, each with its citation), the delivered Tier 2 document
-#         table (optional), and the measurements above.
-# DOES  : recompute every comparable value from the canonical table and compare. Absent
-#         artifacts make a comparison "not applicable"; a difference is reported, never
-#         repaired.
-# OUTPUT: inventory_reconciliation; documented_value_checks; tier2_crosscheck; tier2_status.
+# Compare with the metadata inventory, the values in earlier reports (cited literals below)
+# and the existing Tier 2 document table. Missing inputs are marked "not applicable" and
+# differences are reported as found.
 inventory_files <- c(identifier_structure = "identifier_structure.csv", thread_linkage = "thread_linkage.csv", parent_linkage = "parent_linkage.csv",
                      records_per_utc_day = "records_per_utc_day.csv", source_files = "source_files.csv")
 inventory_paths <- setNames(file.path(inventory_dir, inventory_files), names(inventory_files))
@@ -663,7 +597,7 @@ documented_value_checks <- tribble(
   "UTC calendar days with submissions", 31, "metadata_inventory/README.md s3.3", n_distinct(sb$created_date_utc)) |>
   mutate(equal = abs(measured_value - documented_value) < 1e-9)
 
-# Full-population cross-check against the delivered Tier 2 document table (git-ignored,
+# Full-population cross-check against the Tier 2 document table from the earlier run (git-ignored,
 # optional): it keyed the same 902,144 records by the same doc_key and recorded author,
 # created_utc, link_id, parent_id, submission_id, submission_in_sample and n_chars.
 tier2_present <- file.exists(tier2_table)
@@ -698,9 +632,7 @@ log_line("reconciliation:", sum(inventory_reconciliation$equal, na.rm = TRUE), "
          if (tier2_present) sprintf("Tier 2 cross-check %d of %d equal", sum(tier2_crosscheck$equal), nrow(tier2_crosscheck)) else "Tier 2 table absent")
 
 # ---- Figures --------------------------------------------------------------------------
-# INPUT : records_by_day; threads; authors; linkage.
-# DOES  : four QC figures. Title, axis titles and tick labels only; one hue; nothing excluded.
-# OUTPUT: PNG files under qc/figures/.
+# Four QC figures under qc/figures/.
 qc_theme <- theme_minimal(base_size = 11) +
   theme(panel.grid.minor = element_blank(), panel.grid.major = element_line(colour = "#e1e0d9", linewidth = 0.3),
         axis.text = element_text(colour = "#52514e"), axis.title = element_text(colour = "#0b0b0b"),
@@ -740,10 +672,8 @@ save_fig("fig4_linkage_coverage.png", fig4, 8, 4.2)
 mark_stage("figures")
 
 # ---- Source files after the run: hashes unchanged -------------------------------------
-# INPUT : the source files (hashed again after every read and every derived write).
-# DOES  : compare with the "before" hashes; also with the hashes the metadata inventory
-#         recorded, when that table is present.
-# OUTPUT: raw_data_integrity.
+# Hash the source files again; compare with the "before" hashes and, when present, the
+# metadata inventory's hashes.
 raw_data_integrity <- source_files |> transmute(record_type, file, relative_path, bytes, sha256_before, sha256_after = vapply(file.path(project_dir, relative_path), sha256, character(1)),
                                                 unchanged_during_run = sha256_before == sha256_after,
                                                 sha256_in_metadata_inventory = if (inventory_present[["source_files"]]) { inv <- read_inv("source_files"); inv$sha256[match(file, inv$file)] } else NA_character_) |>
@@ -752,9 +682,7 @@ raw_unchanged <- all(raw_data_integrity$unchanged_during_run)
 mark_stage("raw_hash_after")
 
 # ---- Reconciliation checks: every requirement as a pass / fail row ----------------------
-# INPUT : everything above.
-# DOES  : assemble the check list; a failed check is written to discrepancies.csv.
-# OUTPUT: reconciliation_checks; discrepancies.
+# A failed check is also written to discrepancies.csv.
 checks <- list()
 add_check <- function(check, detail, pass, applicable = TRUE) checks[[length(checks) + 1L]] <<- tibble(check = check, detail = detail, status = if (!applicable) "not applicable" else if (isTRUE(pass)) "pass" else "fail", pass = if (!applicable) NA else isTRUE(pass))
 add_check("rows read equal the Parquet footer row counts for every source file", paste(sprintf("%s: %d read / %d footer", source_files$file, source_files$rows_read, source_files$footer_rows), collapse = "; "), all(source_files$rows_read_equal_footer))
@@ -788,7 +716,7 @@ add_check("no reddit_id or author equals the literal string 'NA' (so NA in the C
 add_check("every value in the metadata-inventory tables that this phase can recompute is reproduced", sprintf("%d of %d compared values equal; %d inventory rows without a measured counterpart", sum(inventory_reconciliation$equal, na.rm = TRUE), sum(!is.na(inventory_reconciliation$equal)), sum(is.na(inventory_reconciliation$measured_value) & !is.na(inventory_reconciliation$inventory_value))),
           all(inventory_reconciliation$equal) && !any(is.na(inventory_reconciliation$measured_value) & !is.na(inventory_reconciliation$inventory_value)), applicable = any(inventory_present))
 add_check("every value documented in the earlier reports is reproduced", sprintf("%d of %d", sum(documented_value_checks$equal), nrow(documented_value_checks)), all(documented_value_checks$equal))
-add_check("the delivered Tier 2 document table keys the same records and agrees on every carried field and on text length", if (tier2_present) sprintf("%d of %d items equal", sum(tier2_crosscheck$equal), nrow(tier2_crosscheck)) else "table not present", all(tier2_crosscheck$equal), applicable = tier2_present)
+add_check("the existing Tier 2 document table keys the same records and agrees on every carried field and on text length", if (tier2_present) sprintf("%d of %d items equal", sum(tier2_crosscheck$equal), nrow(tier2_crosscheck)) else "table not present", all(tier2_crosscheck$equal), applicable = tier2_present)
 add_check("source files unchanged during the run (SHA256 before = after)", sprintf("%d of %d files unchanged", sum(raw_data_integrity$unchanged_during_run), nrow(raw_data_integrity)), raw_unchanged)
 add_check("source file hashes equal those recorded by the metadata inventory", sprintf("%d of %d equal", sum(raw_data_integrity$equal_to_metadata_inventory, na.rm = TRUE), nrow(raw_data_integrity)), all(raw_data_integrity$equal_to_metadata_inventory), applicable = inventory_present[["source_files"]])
 reconciliation_checks <- bind_rows(checks)
@@ -802,10 +730,7 @@ print(as.data.frame(reconciliation_checks[, c("check", "status")]), right = FALS
 mark_stage("checks")
 
 # ---- Environment, runtime and resource record ------------------------------------------
-# INPUT : the clocks, ps and gc records, file sizes.
-# DOES  : record what was run, where, with which R and packages, how long each stage took
-#         and how much memory and CPU were used on this dataset.
-# OUTPUT: run_info; stage_timings; resource_use; r_environment; session_info.txt.
+# What was run, with which R and packages, stage timings, and memory and CPU use.
 git_commit <- tryCatch(system2("git", c("-C", project_dir, "rev-parse", "--short", "HEAD"), stdout = TRUE, stderr = FALSE), error = function(e) "")
 if (length(git_commit) == 0L) git_commit <- ""
 used_packages <- c("nanoparquet", "dplyr", "tidyr", "stringi", "readr", "ggplot2", "scales", "digest", "yaml", "jsonlite", "ps")
@@ -850,10 +775,7 @@ parameters <- tibble(parameter = c("doc_key_rule", "record_type_rule", "thread_i
 mark_stage("environment")
 
 # ---- Write the tables ------------------------------------------------------------------
-# INPUT : every table above.
-# DOES  : one CSV per table under qc/tables/ (run records under environment/); dimensions
-#         recorded for the provenance sidecars.
-# OUTPUT: CSV files.
+# One CSV per table under qc/tables/ (run records under environment/).
 table_dims <- list()
 write_table <- function(tbl, name, dir = tab_dir) {
   path <- file.path(dir, name); write_csv(tbl, path, na = "NA")
@@ -892,20 +814,15 @@ write_table(resource_use,                "resource_use.csv",  env_dir)
 write_table(r_environment,               "r_environment.csv", env_dir)
 
 # ---- Provenance sidecars ---------------------------------------------------------------
-# INPUT : every output file; the input files read.
-# DOES  : write one <output>.manifest.yml per output (schema: manifest_version 1 of the
-#         project's data-transform convention): output hash and dimensions, every input file
-#         with its SHA256 and role, the script and its hash, the parameters, git commit,
-#         R and package versions. The canonical table's sidecar also lists the schema
-#         difference between the source columns and the canonical columns. Paths are
-#         relative to the project root.
-# OUTPUT: *.manifest.yml next to each output.
+# One <output>.manifest.yml per output (manifest_version 1): output hash and size, inputs
+# with SHA256 and role, script hash, parameters, git commit and package versions. The
+# canonical table's sidecar also records the schema difference from the source.
 input_entries <- c(
   lapply(seq_len(nrow(source_files)), function(i) list(path = source_files$relative_path[i], hash = raw_data_integrity$sha256_after[match(source_files$file[i], raw_data_integrity$file)], format = "parquet",
                                                       rows = as.integer(source_files$rows_read[i]), cols = as.integer(source_files$footer_columns[i]), role = "source data, read-only")),
   lapply(ingest_manifests, function(f) list(path = relative_path(f, project_dir), hash = sha256(f), format = "jsonl", role = "ingest manifest sidecar of the source data, read-only")),
   lapply(names(inventory_paths)[inventory_present], function(r) list(path = relative_path(inventory_paths[[r]], project_dir), hash = sha256(inventory_paths[[r]]), format = "csv", role = "earlier metadata-inventory table, read for reconciliation only")),
-  if (tier2_present) list(list(path = relative_path(tier2_table, project_dir), hash = sha256(tier2_table), format = "csv", role = "earlier delivered Tier 2 document table, read for the cross-check only")) else list())
+  if (tier2_present) list(list(path = relative_path(tier2_table, project_dir), hash = sha256(tier2_table), format = "csv", role = "Tier 2 document table from the earlier run, read for the cross-check only")) else list())
 package_versions <- lapply(used_packages, function(p) list(name = p, version = as.character(packageVersion(p))))
 manifest_parameters <- c(setNames(as.list(parameters$value), parameters$parameter), list(row_group_rows = if (nzchar(row_group_rows)) row_group_rows else "nanoparquet default"))
 source_columns <- source_schema |> distinct(field, r_type_after_read) |> group_by(field) |> summarise(type = paste(unique(r_type_after_read), collapse = "|"), .groups = "drop")

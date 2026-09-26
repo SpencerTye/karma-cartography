@@ -1,13 +1,8 @@
-# Unit test for the pure functions of phase1_build_message_events.R.
-#
-# Run from any working directory:
-#   Rscript "pipeline/phase1_message_event_foundation/tests/test_phase1_functions.R"
-# (any Rscript 4.x with dplyr, tidyr, stringi and tibble installed works; the path to the
-#  Phase 1 script is resolved relative to this file, or set PHASE1_SCRIPT to override.)
-#
-# The script is parsed, and only its top-level function definitions are evaluated, so the
-# real pipeline does not run: the functions under test are exactly the ones delivered.
-# A synthetic fixture with every linkage situation is pushed through them.
+# Unit test for the pure functions in phase1_build_message_events.R.
+# Parses the Phase 1 script and evaluates only its top-level function definitions (the pipeline
+# does not run), then checks them on a synthetic fixture covering every linkage case.
+# Run: Rscript "pipeline/phase1_message_event_foundation/tests/test_phase1_functions.R"
+# Needs dplyr, tidyr, stringi and tibble. PHASE1_SCRIPT overrides the script path.
 
 suppressPackageStartupMessages({ library(dplyr); library(tibble); library(stringi) })
 

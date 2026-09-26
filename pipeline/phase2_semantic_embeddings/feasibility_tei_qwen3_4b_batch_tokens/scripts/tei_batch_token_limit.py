@@ -1,21 +1,15 @@
 #!/usr/bin/env python
-"""Phase 2 feasibility test: the TEI `max_batch_tokens` limit of Qwen3-Embedding-4B under 21 GiB.
+"""Largest TEI --max-batch-tokens for Qwen3-Embedding-4B that stays under 21 GiB of GPU memory.
 
-Finds, by direct measurement on the local GPU, the largest `--max-batch-tokens` value with which
-Hugging Face Text Embeddings Inference (TEI, the release image) serves Qwen/Qwen3-Embedding-4B
-without the device ever holding more than 21 GiB of memory, using batches of the longest real
-documents of the canonical Phase 1 table. Every tested value runs in a fresh container under an
-in-process allocation cap (scripts/vram_cap) and an NVML watchdog; nothing is estimated.
+Input: the longest real documents of the canonical Phase 1 table. Each tested value runs in a
+fresh TEI container under the vram_cap allocation cap and an NVML watchdog.
+Outputs: results tables, environment record and REPORT.md.
 
-Stages (run inside the WSL2 venv; see ../README.md):
-  prepare   verify the inputs, pick the candidate documents, build the cap shim, record the
-            environment, run one calibration container (untracked overhead, /info, /tokenize check)
-  search    the below-minimum demonstration, the bracket, the bisection, the confirmation rerun
-  report    the tables, the environment record and REPORT.md
+Stages (run in the WSL2 venv; see ../README.md):
+  prepare   verify inputs, pick candidate documents, build the cap shim, run a calibration container
+  search    below-minimum check, bracket, bisection, confirmation rerun
+  report    tables, environment record and REPORT.md
   all       prepare, search, report
-
-Layout: pure functions first (unit-tested by ../tests/test_tei_batch_token_limit_functions.py),
-then the runtime helpers, then the stages.
 """
 
 from __future__ import annotations

@@ -1,43 +1,11 @@
 #!/usr/bin/env python3
-"""
-FAISS GPU exact nearest-neighbor search benchmark
-==================================================
+"""Exact nearest-neighbor search benchmark with FAISS GpuIndexFlatIP on the full-corpus embeddings.
 
-Exact, exhaustive nearest-neighbor search over the full-corpus
-Qwen3-Embedding-0.6B embeddings (902,144 x 1024, float32, L2-normalized).
-
-Index: FAISS ``GpuIndexFlatIP`` -- a flat (brute-force) inner-product index.
-Because the stored vectors are L2-normalized, inner product == cosine
-similarity, and the ranking corresponds to cosine similarity. This is the
-mature FAISS exact-search primitive; there is NO IVF / HNSW / PQ / quantization
-/ vector compression / clustering / approximation of any kind. Vectors are kept
-at float32 exactly as stored on disk (the embeddings are neither rebuilt nor
-altered).
-
-What it measures (single process, index loaded once):
-  1. index build/load time; whole-card GPU memory before/after; host RAM;
-     confirmation that all 902,144 x 1024 float32 vectors are present + finite
-     + L2-normalized.
-  2. untimed warm-up, then a short query-batch-size sweep (a few sizes) to pick
-     a practically efficient batch size (NOT a memory-limit / bisection search).
-  3. a main timed test: 10,000 real corpus documents queried against the whole
-     902,144-doc index, retrieving the 100 closest *other* documents (request
-     k+1, drop the query's own row). Per-batch and aggregate timing + peak
-     whole-card GPU memory.
-  4. a 20 / 100 / 500 returned-neighbor-count comparison (throughput effect of k).
-  5. an independent exactness validation: for a few real queries, recompute
-     cosine similarity against the entire float32 matrix with a plain numpy
-     fp32 matmul and compare identities, order, scores, self-match to FAISS.
-  6. a full-corpus (902,144-query) runtime extrapolation from the measured rate.
-
-Writes only small evidence files (JSON/CSV). It never writes an all-corpus
-neighbor table.
-
-Whole-card GPU memory is sampled via NVML (nvidia-ml-py), which on this WSL2
-host reports total device usage including the Windows desktop apps; a one-shot
-nvidia-smi reading is captured alongside as a cross-check. The hard whole-card
-ceiling for this project is 21 GiB (21,504 MiB); this test stays far below it
-and does not probe the boundary.
+Input: the 902,144 x 1024 float32 L2-normalized Qwen3-Embedding-0.6B matrix (inner product = cosine).
+Measures index load, a query batch-size sweep, a 10,000-query top-100 run, the effect of k
+(20/100/500), an exactness check against a numpy matmul, and a full-corpus runtime extrapolation.
+Outputs: small JSON/CSV evidence files only. GPU memory is read whole-card via NVML
+(21 GiB project ceiling, not probed).
 """
 
 import argparse
@@ -790,7 +758,7 @@ def main():
         },
     )
 
-    # ----- MAIN timed test: 10,000 queries, k+1 then drop self, keep k -----
+    # ----- Main timed test: 10,000 queries, k+1 then drop self, keep k -----
     request_k = args.k + 1  # +1 so the query's own row can be removed
     log(
         f"MAIN timed test: {n_q} queries, request_k={request_k}, keep {args.k} others, "

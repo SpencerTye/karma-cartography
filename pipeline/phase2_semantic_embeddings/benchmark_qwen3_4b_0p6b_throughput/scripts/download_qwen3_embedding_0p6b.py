@@ -1,14 +1,9 @@
 #!/usr/bin/env python
-"""Download Qwen/Qwen3-Embedding-0.6B at a pinned revision into the WSL2 Hugging Face cache and
-verify every file against the hashes the Hub API reported for that revision.
+"""Download Qwen/Qwen3-Embedding-0.6B at a pinned revision into the WSL2 Hugging Face cache.
 
-Run inside the WSL2 venv (see ../README.md):
-
-    ~/venvs/socialmediadgg-phase2/bin/python download_qwen3_embedding_0p6b.py
-
-Large files (LFS) are checked by SHA256; small files by their git blob id (SHA1 of
-"blob <size>\\0" + content). Writes ../environment/model_snapshot_0p6b.json and exits non-zero if
-any file differs.
+Checks every file against the Hub's hashes (SHA256 for LFS files, git blob SHA1 for the rest),
+writes ../environment/model_snapshot_0p6b.json, and exits non-zero on any mismatch.
+Run: ~/venvs/socialmediadgg-phase2/bin/python download_qwen3_embedding_0p6b.py
 """
 
 import datetime as dt

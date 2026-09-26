@@ -1,32 +1,10 @@
 #!/usr/bin/env python3
-"""Improved 2-D UMAP views from the ALREADY-SAVED full-corpus coordinates and
-HDBSCAN labels. This is a pure re-visualisation step.
+"""Redraw the full-corpus 2-D UMAP views from saved coordinates and HDBSCAN labels.
 
-It does NOT rerun UMAP, HDBSCAN, or embeddings and does NOT modify any existing
-analytical result or figure. It reads two saved, row-aligned artifacts:
-  results/umap_2d_visualization_coordinates.npy   (float32, 902144 x 2)
-  results/hdbscan_labels.parquet                  (label; -1 = noise)
-and writes new figures + one JSON sidecar into figures/improved_umap_views/.
-
-Why: a very small number of extreme UMAP coordinates (one document sits at
-UMAP-1 ~= -357 while the central 99.9% of UMAP-1 lies within ~[-17, 17]) stretch
-the axes so far that almost the whole 902,144-document corpus is compressed into a
-narrow strip, and the assigned-vs-noise scatter overplots ~10^6 points. The fix:
-report the coordinate distribution, then render density (hexbin, log colour scale)
-inside robust percentile viewports, keeping one full-extent map and one dedicated
-extreme-coordinate view so nothing is deleted or hidden.
-
-Figures (title + axis/tick labels + colourbar label only; no interpretation, no
-cluster naming):
-  fig1_full_extent_density.png            all documents, full extent
-  fig2_central_99p9_density.png           UMAP-1/2 each 0.05th-99.95th pct
-  fig3_central_99p0_density.png           UMAP-1/2 each 0.5th-99.5th pct
-  fig4_assigned_vs_noise_central_99p9.png assigned (>=0) vs noise (-1), shared scale
-  fig5_extreme_outside_99p9.png           documents outside the 99.9% viewport
-  umap_view_summary.json                  quantiles, viewport bounds, in/out counts
-
-No GPU required. Run with the same WSL2 rapids venv that produced the baseline so
-the provenance manifests (software block, repo-relative paths) match the project norm.
+Inputs: results/umap_2d_visualization_coordinates.npy and results/hdbscan_labels.parquet.
+Outputs: density figures (full extent, 99.9% and 99.0% viewports, assigned vs noise, extreme points)
+and umap_view_summary.json in figures/improved_umap_views/. Nothing is recomputed.
+Needs no GPU; run in the RAPIDS venv so the manifests match the baseline run.
 """
 
 from __future__ import annotations
@@ -38,7 +16,7 @@ import sys
 import numpy as np
 
 # Reuse the baseline run's provenance manifest writer / hashing / git helpers so the new
-# sidecars are byte-for-byte consistent with the rest of the deliverable.
+# sidecars match the rest of this output byte for byte.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import run_full_corpus_umap_hdbscan as R  # noqa: E402
 
@@ -54,7 +32,7 @@ XLAB = "UMAP-1 (2-D visualisation)"
 YLAB = "UMAP-2 (2-D visualisation)"
 CBAR = "Documents per hexbin (log scale)"
 
-# The exact quantiles the task requests, in order.
+# Quantiles to report, in order.
 QLABELS = [
     "min",
     "0.01%",

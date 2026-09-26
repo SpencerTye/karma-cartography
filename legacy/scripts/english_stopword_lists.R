@@ -1,13 +1,8 @@
-# English stopword lists: acquisition, provenance, comparison and organisation for manual curation
-#
-# Standalone. Acquires candidate English stopword lists from pinned upstream sources
-# (GitHub commits / release tags, Wayback Machine snapshots, PyPI, CRAN packages
-# installed locally), preserves every acquired file untouched under raw/, writes every
-# extracted list separately under lists/, documents provenance and the inclusion
-# decision for every candidate, and compares the included lists (membership table,
-# Jaccard similarities, duplicates, larger-list additions, lineage-aware consensus,
-# curation tiers). Makes no keep/remove decision and creates no project stopword list.
-# Nothing here reads the Reddit corpus.
+# Collects English stopword lists from pinned sources (GitHub commits, Wayback snapshots, PyPI,
+# installed CRAN packages), records their provenance, and compares them for manual curation.
+# Outputs under r_analysis_outputs/stopword_lists/: raw/ (unmodified source files), lists/ (one
+# extracted list per file), tables/ (membership, Jaccard, families, tiers) and figures/.
+# Env: KC_REPO_ROOT (project root). Does not read the Reddit corpus.
 
 # ---- Setup ----
 suppressPackageStartupMessages({
@@ -48,11 +43,9 @@ if (length(missing_pkgs)) stop("Install the data packages first: ", paste(missin
 pkg_version <- function(p) as.character(packageVersion(p))
 
 # ---- Source registry ----
-# INPUT : none (hand-maintained). One row per acquired file. `kind`: named = a named list that enters
-#         the raw comparison if included; aggregate = comparison condition only; secondary = copy used for
-#         cross-checks; excluded = acquired for documentation, kept out of every comparison.
-# DOES  : fixes the URL, the pin (commit / tag / Wayback timestamp / package version), the parser and
-#         the raw file name for every source.
+# Hand-maintained, one row per acquired file with its URL, pin, parser and raw file name.
+# kind: named (compared if included), aggregate (comparison condition only), secondary (cross-check
+# copy), excluded (kept for documentation only).
 sources <- tribble(
   ~list_id, ~list_name, ~kind, ~acquisition, ~url, ~pin, ~parser, ~parser_arg, ~file_name,
   "snowball_original", "Snowball English stop list (stop.txt, default words)", "named", "download", gh_raw("snowballstem/snowball-website", "ce80856f7574e040b191328062433247c67690e8", "algorithms/english/stop.txt"), "commit ce80856f, 2025-03-03", "snowball", NA, "snowball_stop.txt",
@@ -150,17 +143,17 @@ provenance <- tribble(
   "tm_english", "R package tm, inst/stopwords/english.dat", "tm 0.7-19 (CRAN)", "stopwords('english') for R text mining (tm)", "Snowball stop.txt (tm help: lists 'from the Snowball stemmer project ... obtained from http://svn.tartarus.org/snowball/trunk/website/algorithms/*/stop.txt')", "snowball", FALSE, "included", "Named R implementation of the Snowball list", "tm help page for stopwords(); raw english.dat copied byte-for-byte from the installed package",
   "tidytext_snowball", "R package tidytext, stop_words dataset, lexicon 'snowball'", "tidytext 0.4.3 (CRAN)", "Stop words for tidy text mining in R", "tm (help: 'The snowball and SMART sets are pulled from the tm package. Note that words with non-ASCII characters have been removed.')", "snowball", FALSE, "included", "Named R implementation (copy of tm's list)", "tidytext help page for stop_words; sources listed there: lextek stopwords1.html, JMLR Lewis et al. 2004, snowball stop.txt",
   "stopwords_pkg_snowball", "R package stopwords, data_stopwords_snowball$en", "stopwords 2.3 (CRAN)", "Multilingual stopword lists for R text analysis (used by quanteda)", "Snowball project lists (help: taken from snowball_all.tgz)", "snowball", FALSE, "included", "Named R implementation; differs from tm's copy by one entry ('will'), see secondary_crosschecks.csv", "Package help for data_stopwords_snowball",
-  "quanteda_snowball", "R package quanteda, stopwords() re-exported from the stopwords package", "quanteda 4.5.0 (CRAN)", "Stop words for quanteda corpus analysis", "stopwords_pkg_snowball (identical function object; quanteda help: 'Stopword lists were formerly built into quanteda, but have been moved to the stopwords package')", "snowball", FALSE, "included", "Named implementation the user asked for; an exact re-export", "identical(quanteda::stopwords, stopwords::stopwords) is TRUE in this session",
+  "quanteda_snowball", "R package quanteda, stopwords() re-exported from the stopwords package", "quanteda 4.5.0 (CRAN)", "Stop words for quanteda corpus analysis", "stopwords_pkg_snowball (identical function object; quanteda help: 'Stopword lists were formerly built into quanteda, but have been moved to the stopwords package')", "snowball", FALSE, "included", "Named implementation, included on request; an exact re-export", "identical(quanteda::stopwords, stopwords::stopwords) is TRUE in this session",
   "marimo_upstream", "Marimo multilingual stopwords collection, yaml/stopwords_en.yml (Kohei Watanabe)", "commit f3e26e37, 2020-03-27", "Cross-lingual quantitative (social-scientific) text analysis: 'Marimo extends the Snowball stopword list ... English words are extended and translated into functionally equivalent words in respective languages manually' (README)", "Snowball English list, extended (YAML comments mark additions: reporting verbs, time units, months, days, cardinal numbers, whose, many, little, less)", "snowball", FALSE, "included", "Provenance supports general text analysis; documented Snowball extension", "README of koheiw/marimo; YAML field structure preserved in marimo_upstream_fields.csv",
   "marimo_pkg", "R package stopwords, data_stopwords_marimo$en flattened by stopwords(source = 'marimo')", "stopwords 2.3 (CRAN)", "As marimo_upstream, exposed in R", "marimo_upstream (help: 'The English version was adopted from the Snowball collection, and then extended')", "snowball", FALSE, "included", "Named R implementation of the marimo list", "Package help for data_stopwords_marimo",
   "python_stop_words_2014", "Alir3z4/stop-words english.txt as first added (the list bundled by the Python 'stop-words' package until 2018)", "commit c2ba7cd7, 2014-05-06", "Stop word lists for the python stop-words package (general-purpose)", "undocumented in the repository; by comparison a copy of the Snowball list (see secondary_crosschecks.csv)", "snowball", FALSE, "included_provisional", "Provenance established only by comparison (no source statement); later versions of the same file are aggregates and are treated as comparison conditions", "Repository history: 'Add English' 2014-05-06; 'Update english.txt' 2018-12-02 replaced it by a 1,298-entry list identical to stopwords-iso; 'Merge word lists with rival lists' 2025-10-28",
   "lexicon_python", "R package lexicon, sw_python ('Python Stopword List', credited to Alireza Savand, https://pypi.org/project/stop-words/)", "lexicon 1.3.2 (CRAN)", "Stopword data for R text analysis", "python_stop_words_2014", "snowball", FALSE, "included", "Named R implementation of the Python stop-words English list (174 entries)", "lexicon help page for sw_python",
-  "smart_lextek", "SMART information retrieval system stop list (Salton & Buckley, Cornell), as published in the Onix Text Retrieval Toolkit API reference 'Stop Word List 2' (lextek.com)", "Wayback snapshot 2008-02-09; page states 571 words; list dates from the SMART system (1960s-1990s)", "IR system stop list: 'built by Gerard Salton and Chris Buckley for the experimental SMART information retrieval system at Cornell University' (page text); adopted as the SMART lexicon of tm, tidytext, stopwords, quanteda", "none (original list)", "smart", TRUE, "included", "Root of the SMART family; the list the user's project currently uses", "Page header inside the list: '# Freely available stopword list generated by Chris Buckley and Gerard Salton at Cornell University.' The Cornell ftp original (ftp.cs.cornell.edu/pub/smart/english.stop) and the GNOME mirror are no longer reachable and have no Wayback capture",
+  "smart_lextek", "SMART information retrieval system stop list (Salton & Buckley, Cornell), as published in the Onix Text Retrieval Toolkit API reference 'Stop Word List 2' (lextek.com)", "Wayback snapshot 2008-02-09; page states 571 words; list dates from the SMART system (1960s-1990s)", "IR system stop list: 'built by Gerard Salton and Chris Buckley for the experimental SMART information retrieval system at Cornell University' (page text); adopted as the SMART lexicon of tm, tidytext, stopwords, quanteda", "none (original list)", "smart", TRUE, "included", "Root of the SMART family; the list this project currently uses", "Page header inside the list: '# Freely available stopword list generated by Chris Buckley and Gerard Salton at Cornell University.' The Cornell ftp original (ftp.cs.cornell.edu/pub/smart/english.stop) and the GNOME mirror are no longer reachable and have no Wayback capture",
   "rake_smart", "RAKE reference implementation (aneesha/RAKE) SmartStoplist.txt", "commit 7aef80f7, 2012-12-17", "Stop list for RAKE keyword extraction (Rose et al. 2010)", "SMART (header: 'stop word list from SMART (Salton,1971). Available at ftp://ftp.cs.cornell.edu/pub/smart/english.stop')", "smart", FALSE, "included", "Keyphrase-extraction implementation of SMART", "File header quoted in documented_parent",
   "tm_smart", "R package tm, inst/stopwords/SMART.dat", "tm 0.7-19 (CRAN)", "stopwords('SMART') for R text mining", "SMART list 'as documented in Appendix 11 of https://jmlr.csail.mit.edu/papers/volume5/lewis04a/' (tm help), which coincides with the MC toolkit stoplist", "smart", FALSE, "included", "Named R implementation of SMART", "tm help page for stopwords(); the JMLR appendix URL returns 404 in 2026",
   "tidytext_smart", "R package tidytext, stop_words dataset, lexicon 'SMART'", "tidytext 0.4.3 (CRAN)", "Stop words for tidy text mining", "tm_smart (pulled from tm)", "smart", FALSE, "included", "Named R implementation (copy of tm's list)", "tidytext help page for stop_words",
   "stopwords_pkg_smart", "R package stopwords, data_stopwords_smart$en", "stopwords 2.3 (CRAN)", "Stop words for R text analysis", "SMART list 'taken from the online appendix 11 of Lewis et al. (2004)' (package help)", "smart", FALSE, "included", "Named R implementation of SMART", "Package help for data_stopwords_smart",
-  "quanteda_smart", "R package quanteda, stopwords(source = 'smart') re-exported from stopwords", "quanteda 4.5.0 (CRAN)", "Stop words for quanteda corpus analysis", "stopwords_pkg_smart (exact re-export)", "smart", FALSE, "included", "Named implementation the user asked for", "identical(quanteda::stopwords, stopwords::stopwords) is TRUE",
+  "quanteda_smart", "R package quanteda, stopwords(source = 'smart') re-exported from stopwords", "quanteda 4.5.0 (CRAN)", "Stop words for quanteda corpus analysis", "stopwords_pkg_smart (exact re-export)", "smart", FALSE, "included", "Named implementation, included on request", "identical(quanteda::stopwords, stopwords::stopwords) is TRUE",
   "buckley_salton_qdap", "R package qdapDictionaries, BuckleySaltonSWL ('Buckley & Salton Stopword List')", "qdapDictionaries 1.0.7 (CRAN, 2018)", "Stopword list for the qdap discourse-analysis package", "SMART (help quotes the Onix page: 'built by Gerard Salton and Chris Buckley for the experimental SMART information retrieval system'; Note: 'Reduced from the original 571 words to 546'); measured: the SMART words with the apostrophes stripped from the contraction forms (aint, arent, cmon, couldnt ...), not a word-level reduction", "smart", FALSE, "included", "The 'Buckley-Salton' name resolves to a re-formatted copy of SMART; included as a named derivative", "qdapDictionaries help page for BuckleySaltonSWL; secondary_crosschecks.csv lists the apostrophe-stripped forms",
   "bow_rainbow", "Bow / Rainbow toolkit (Andrew McCallum, CMU), libbow stopwords.c array _bow_builtin_stopwords", "bow-20020213 tarball (2002-02-13); file copyright 1997-1998", "Built-in stoplist of the Bow toolkit for statistical text classification, retrieval and clustering (rainbow, arrow, crossbow)", "SMART (undocumented in the file; MALLET and Weka document their lists as Rainbow's); measured: exactly the SMART list without its 47 apostrophe forms (a's, ain't, can't ...)", "smart", FALSE, "included", "Parent of the MALLET and Weka lists", "stopwords.c header: 'Copyright (C) 1997, 1998 Andrew McCallum ... This file is part of the Bag-Of-Words Library, libbow'; secondary_crosschecks.csv",
   "mallet", "MALLET, stoplists/en.txt (mimno/Mallet)", "commit 23ee9bce, 2010-04-26 ('multilingual stoplists added')", "Default English stoplist of MALLET text import (topic modelling, classification): 'a standard list of English stopwords that is included in the compiled Java code ... the contents of this list are included in the Mallet distribution in the file stoplists/en.txt' (MALLET docs)", "Bow/Rainbow list (identical set, see secondary_crosschecks.csv)", "smart", FALSE, "included", "Topic-modelling toolkit default", "MALLET documentation page 'Data Import - Stopwords' (mimno.github.io/Mallet/import-stoplist)",
@@ -183,7 +176,7 @@ provenance <- tribble(
   "corenlp_patterns", "Stanford CoreNLP, data/edu/stanford/nlp/patterns/surface/stopwords.txt", "commit ceefe814, 2016-01-22", "Stop words for CoreNLP's pattern-based entity extraction (patterns.surface, SPIED); includes punctuation tokens", "none documented; measured: closest to the Snowball family (Jaccard 0.68 with the Snowball list) with punctuation tokens and apostrophe-stripped contractions (arent, cant ...) added", "corenlp", TRUE, "included", "The general stopword file shipped with CoreNLP (the coref and acronym word lists are special-purpose and excluded); kept as its own family because it is materially different from any Snowball copy", "File inspected: 257 lines starting with punctuation tokens (!!, ?!, -lrb-, ...); family_review_flags.csv",
   "lingpipe", "LingPipe 4.1.0, com.aliasi.tokenizer.EnglishStopTokenizerFactory (built-in STOP_SET)", "LingPipe 4.1.0 (2011); source from the hvtuananh/lingpipe clone, commit 70331b9f, 2013-11-18; confirmed against the alias-i Javadoc (Wayback 2022-03-03)", "Built-in English stop list of LingPipe's tokenizer (NLP toolkit)", "none documented", "lingpipe", TRUE, "included", "NLP-toolkit default with clear provenance", "Javadoc: 'The built-in stoplist consists of the following words: ...' (76 words); identical to the clone's source",
   "choi_c99", "Stop list of Freddy Choi's C99 / TextTiling segmentation implementations (Choi 2000), preserved in igorbrigadir/stopwords en/choi_2000naacl.txt", "igorbrigadir commit ab85d86c, 2019-08-20; original code (Google Code archive uima-text-segmenter) not machine-readable", "Stop list used by text-segmentation algorithms (topic boundary detection)", "none documented", "c99", TRUE, "included_provisional", "Text-analysis use is documented, but only a secondary copy exists", "igorbrigadir table: 'UIMA wrapper for the java implementations of the segmentation algorithms C99 and TextTiling, written by Freddy Choi'",
-  "cook_1988", "Vivian Cook, 'List of English structure (function) words' (viviancook.uk/Words/StructureWordsList.htm)", "Wayback snapshot 2019-12-25; list compiled for Cook (1988)", "Function-word list 'compiled for practical purposes some time ago as data for a computer parser for student English' (page text); applied linguistics", "none (original list)", "cook", TRUE, "included_provisional", "A linguistic function-word list rather than a stoplist built for text mining; kept provisionally as a general-English reference for the user's review", "Page text quoted in intended_use; IPA weak forms removed by the parser (documented in list_summary.csv)",
+  "cook_1988", "Vivian Cook, 'List of English structure (function) words' (viviancook.uk/Words/StructureWordsList.htm)", "Wayback snapshot 2019-12-25; list compiled for Cook (1988)", "Function-word list 'compiled for practical purposes some time ago as data for a computer parser for student English' (page text); applied linguistics", "none (original list)", "cook", TRUE, "included_provisional", "A linguistic function-word list rather than a stoplist built for text mining; kept provisionally as a general-English reference for manual review", "Page text quoted in intended_use; IPA weak forms removed by the parser (documented in list_summary.csv)",
   "qdap_function_words", "R package qdapDictionaries, function.words ('function words from John and Muriel Higgins's list used for the text game ECLIPSE', augmented with contractions)", "qdapDictionaries 1.0.7 (CRAN)", "Function-word list distributed with the qdap discourse-analysis package", "Higgins & Higgins ECLIPSE function-word list (language-teaching game), plus qdap's contractions table", "higgins", TRUE, "included_provisional", "Function-word list from a language-teaching context, exposed by an R text-analysis package; provisional", "qdapDictionaries help page for function.words",
   "okapi_framework", "Okapi Framework (localisation toolkit), steps/termextraction resource stopWords_en.txt", "bitbucket master, retrieved at run time (no version pin available without authentication)", "Stop words for the Okapi Framework term-extraction step", "none documented", "okapi_framework", TRUE, "included_provisional", "Term extraction is close to concept extraction; provenance thin (unpinned, no source statement)", "File header: '# Stop words default list for English'; not the Okapi BM25 search engine",
   "stopwords_iso", "stopwords-iso/stopwords-en, stopwords-en.txt", "commit 472b42fd, 2016-10-10", "'The most comprehensive collection of stopwords for the english language' (README): an aggregate of 30+ sources including SEO sites, Lextek Onix, Snowball, Glasgow, PubMed", "aggregate of many lists (CREDITS.md of stopwords-iso)", "aggregate", FALSE, "aggregate_condition", "Aggregate comparison condition, not an independent source family", "CREDITS.md lists Link Assistant, Lextek Onix, Snowball Tartarus, Webconfs, 99Webtools, Glasgow, SEO Book, NCBI, Ranks NL, ...",
@@ -225,10 +218,8 @@ excluded_candidates <- tribble(
 )
 
 # ---- Acquisition ----
-# INPUT : the registry; the network (first run) or the raw/ cache (later runs).
-# DOES  : downloads every URL byte-for-byte (curl, mode wb) into raw/ unless the file already exists;
-#         extracts archive members; exports lists from the installed R packages; hashes everything.
-# OUTPUT: acquisition_log (one row per raw file).
+# Downloads each URL into raw/ unless already cached, extracts archive members, exports package
+# lists and hashes every file. Result: acquisition_log, one row per raw file.
 log_line("acquiring sources")
 acq_rows <- list()
 record_acq <- function(list_id, file_rel, url, pin, status, cache_hit) {
@@ -304,8 +295,8 @@ add_check("acquisition", "every primary (non-secondary) raw file exists and is n
 add_check("acquisition", "no download error recorded for a primary source", sum(grepl("^ERROR", acquisition_log$status) & !grepl("^secondary/", acquisition_log$file)), !any(grepl("^ERROR", acquisition_log$status) & !grepl("^secondary/", acquisition_log$file)))
 
 # ---- Parsers ----
-# INPUT : a raw file. OUTPUT: the entries in file order, exactly as written (comment lines, blank lines,
-#         code syntax and HTML removed; nothing lower-cased, trimmed or deduplicated here).
+# Each parser returns a raw file's entries in file order, with comments, blank lines, code syntax and
+# HTML removed. No case folding, trimming or deduplication happens here.
 read_utf8 <- function(path) { x <- readLines(path, encoding = "UTF-8", warn = FALSE); x <- stri_replace_all_regex(x, "\\r$", ""); stri_replace_first_regex(x, "^\\uFEFF", "") }
 parse_lines <- function(path, comment = NA) {
   x <- read_utf8(path); x <- x[stri_trim_both(x) != ""]
@@ -399,10 +390,9 @@ marimo_fields      <- flatten_yaml(read_yaml(list_file_of("marimo_upstream"))) |
 for (id in unique(raw_entries$list_id)) writeLines(enc2utf8(raw_entries$raw_entry[raw_entries$list_id == id]), file.path(lists_dir, paste0(id, ".txt")), useBytes = TRUE)
 
 # ---- Normalisation (formatting only) ----
-# DOES  : NFC; curly apostrophes (U+2018, U+2019, U+02BC, U+2032) to '; trim; internal whitespace to one
-#         space; lower case; drop entries that become empty; keep the first of within-list duplicates.
-#         Every change is logged per entry. No character is removed, no punctuation stripped.
-# OUTPUT: entries (one row per raw entry with its normalised form), members (unique normalised entries per list).
+# NFC, curly apostrophes (U+2018, U+2019, U+02BC, U+2032) to ', trim, collapse whitespace, lower case,
+# drop empty entries, keep the first of within-list duplicates. Every change is logged per entry.
+# Result: entries (raw entry with its normalised form) and members (unique entries per list).
 log_line("normalising")
 normalise_table <- function(df) {
   e0 <- df$raw_entry
@@ -446,7 +436,7 @@ list_summary <- sources |> select(list_id, list_name, kind, pin, parser, file_na
   arrange(kind, desc(n_unique_entries))
 
 # ---- Cross-checks between primary lists, package copies and secondary copies ----
-# DOES  : set equality and differences for pairs whose identity is claimed or expected.
+# Set equality and differences for pairs expected to be identical.
 set_of <- function(id) members$entry[members$list_id == id]
 compare_sets <- function(a, b, claim) {
   A <- set_of(a); B <- set_of(b)
@@ -528,8 +518,8 @@ add_check("parsing", "documented sizes reproduced: Snowball 174, SMART 571 raw, 
           all(sapply(c("snowball_original", "smart_lextek", "onix_lextek", "gate_kea", "lingpipe", "mallet", "weka_rainbow", "glasgow", "sklearn"), function(i) sum(raw_entries$list_id == i)) == c(174, 571, 429, 452, 76, 524, 526, 319, 318)))
 
 # ---- Comparison set ----
-# DOES  : the raw named comparison uses every named list whose inclusion status is included or
-#         included_provisional. Aggregates, secondary copies and the excluded list stay out.
+# Named lists with status included or included_provisional. Aggregates, secondary copies and the
+# excluded list stay out.
 included_ids <- provenance$list_id[provenance$inclusion_status %in% c("included", "included_provisional")]
 included_ids <- included_ids[included_ids %in% members$list_id]
 fam <- provenance |> filter(list_id %in% included_ids) |> select(list_id, family, is_family_root)
@@ -560,8 +550,8 @@ word_stats <- tibble(entry = rownames(Mx),
 add_check("comparison", "raw list count equals the row sums of the membership matrix", "", all(word_stats$n_lists == rowSums(Mx)))
 
 # ---- Tiers ----
-# DOES  : nested tiers cut at count thresholds (never inside a tied group), chosen to bring the cumulative
-#         sizes closest to 1:2:4 on the log scale. Primary tiers use n_lists; supplementary tiers use n_families_any.
+# Nested tiers cut at count thresholds (never inside a tied group) with cumulative sizes closest to
+# 1:2:4 on the log scale. Primary tiers use n_lists; supplementary tiers use n_families_any.
 choose_tiers <- function(cnt, ratio = tier_ratio) {
   vals <- sort(unique(cnt), decreasing = TRUE); vals <- vals[vals >= 2]   # the widest tier still requires agreement of at least two lists / families
   if (length(vals) < 3) return(list(thresholds = rep(NA, 3), sizes = rep(NA, 3)))

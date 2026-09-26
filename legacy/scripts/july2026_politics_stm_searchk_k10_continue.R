@@ -1,53 +1,13 @@
-# July 2026 r/politics sample - continuation of the K = 10 STM fit of the searchK evidence run
-#
-# Purpose: continue the K = 10 model of r_analysis_outputs/stm_searchk_k10_k20_k30/ (fitted by
-# july2026_politics_stm_searchk_k10_k20_k30.R and stopped by that run's 25-iteration ceiling with a
-# relative change of the bound of 1.6e-4, not converged) from its saved state, through stm's documented
-# restart (stm(model = <saved model>)), under exactly the settings of the searchK run: the same fitted
-# documents and vocabulary (models/common_input.rds, the common held-out construction), the same
-# prevalence and content formulas and covariate table (the design matrix and the s() bases are rebuilt by
-# stm from the same formula and data, and checked identical), L1 prevalence regularisation with the same
-# glmnet pmax memory cap through the same replacement of stm:::opt.mu (the function is taken from the
-# searchK script itself), the same convergence tolerance (1e-5, stm's rule), the same seed, until stm's
-# convergence rule is met or a higher explicit ceiling is reached. Nothing is re-initialised: stm's restart
-# carries mu and gamma, sigma, beta (as exp(logbeta)), kappa, the variational means (eta) and the bound
-# trace and increments the iteration counter, so the continued trace is the uninterrupted one (the searchK
-# run itself fitted in chunks of five iterations through this restart). K = 20 and K = 30 are untouched;
-# no diagnostic (held-out likelihood, residual dispersion, coherence, labels) is recomputed; only
-# inexpensive fit-accounting checks run after the fit.
-#
-# What the script does, in order:
-#   1. loads the searchK run's common input, the retained K = 10 model, its fit record, its L1 path record
-#      and its provenance sidecar; verifies that the retained object is the stopped state its sidecar
-#      describes (hash) and that its settings are the searchK run's; extracts the searchK script's own
-#      functions (the opt.mu replacement with the pmax cap and per-call record, the fit-log parser, the
-#      memory sampler) from that script, whose hash must equal the hash the sidecar recorded;
-#   2. continues the EM in chunks of STM_FIT_CHUNK iterations through stm(model = ), the partial model
-#      saved after every chunk (a re-run resumes from it), the console written to
-#      models/fit_console_K010_continuation.log, every L1 call recorded, a background memory sampler;
-#   3. saves the continued model; renames the stopped object to models/stm_K010_iter25_stopped.rds (its
-#      sidecar re-pointed and annotated) and installs the continued model as models/stm_K010.rds; keeps
-#      the original fit record as fit_record_K010_iter25_stopped.rds and writes the merged fit record as
-#      fit_record_K010.rds; writes models/continuation_K010_record.rds;
-#   4. runs fit-accounting checks (history preserved, dimensions, design matrix identical, settings
-#      identical apart from the ceiling, theta and beta valid, bound increased, K = 20 and K = 30 untouched)
-#      and writes the continuation tables and provenance sidecars to
-#      r_analysis_outputs/stm_searchk_k10_continuation/ (a sibling folder: the searchK script clears its
-#      own tables/ and figures/ on every main run).
-# A re-run after the continuation has been applied skips the fit and regenerates the tables and sidecars
-# from the saved objects; with a higher STM_CONTINUE_MAX_EM_ITS it continues the retained (continued)
-# model further and updates the same records.
-# Environment switches: STM_CONTINUE_MAX_EM_ITS (total-iteration ceiling; default 125), STM_FIT_CHUNK
-# (EM iterations per stm() call; default 5), STM_MEMORY_SAMPLER=0, STM_QUICK=<folder> (operate on the
-# quick-run package under <folder>; ceiling 4, chunk 1), STM_CONTINUE_ALLOW_SCRIPT_CHANGE=1 (fit even if
-# the searchK script's hash differs from the sidecar's record), STM_CONTINUE_STOP_AFTER_CHUNKS=n (debug:
-# exit after n chunks with the partial model saved, to exercise the resume path).
+# Continues the K = 10 STM fit from the searchK run (stopped at its 25-iteration ceiling before converging)
+# through stm's restart, stm(model = <saved model>), with the searchK run's settings otherwise unchanged.
+# Input: r_analysis_outputs/stm_searchk_k10_k20_k30/models/ and the searchK script, whose helpers are reused.
+# Output: the continued models/stm_K010.rds (the stopped model kept as stm_K010_iter25_stopped.rds) and
+# tables in r_analysis_outputs/stm_searchk_k10_continuation/. A re-run resumes from the last saved chunk.
+# Env: STM_CONTINUE_MAX_EM_ITS (default 125), STM_FIT_CHUNK (default 5), STM_MEMORY_SAMPLER=0,
+#      STM_QUICK=<folder>, STM_CONTINUE_ALLOW_SCRIPT_CHANGE=1, STM_CONTINUE_STOP_AFTER_CHUNKS=n (debug).
 
 # ---- Setup: packages, paths, parameters ----
-# INPUT : none.
-# DOES  : load packages; define paths (the searchK package and the continuation folder), the
-#         continuation settings and the implementation switches; clear the continuation tables.
-# OUTPUT: parameter objects; tables/ directory of the continuation folder.
+# Paths, continuation settings and switches; clears the continuation tables.
 suppressPackageStartupMessages({ library(dplyr); library(tibble); library(Matrix); library(stm); library(ps); library(readr); library(digest); library(yaml) })
 startup_elapsed_seconds <- proc.time()[["elapsed"]]
 run_start <- Sys.time()
@@ -75,11 +35,8 @@ gamma_pmax          <- NA_integer_   # set from the common input before the fit;
 settings_ignore     <- c("convergence.max.em.its", "call")   # the two settings a restart necessarily changes: the target iteration count and the recorded call
 
 # ---- The searchK script's own functions, extracted from the script ----
-# INPUT : july2026_politics_stm_searchk_k10_k20_k30.R (parsed, not run).
-# DOES  : evaluate only the named top-level definitions: process memory / logging / timing / hashing
-#         helpers, file naming, the fit-log parser, the memory sampler, and the L1 prevalence step
-#         (stm's opt.mu with the pmax cap and the per-call record) exactly as the searchK run used them.
-# OUTPUT: the functions and the two globals (gamma_call_counter, gamma_log_csv) they use.
+# Evaluates only the named helper definitions from the parsed searchK script (logging, fit-log parser, memory
+# sampler, the capped opt.mu), so the continuation runs the same code as the searchK run.
 main_exprs <- parse(main_script, keep.source = FALSE)
 extract_def <- function(name) {
   is_def <- vapply(main_exprs, function(e) is.call(e) && identical(e[[1]], as.name("<-")) && identical(e[[2]], as.name(name)), logical(1))
@@ -166,7 +123,7 @@ merge_fit_record <- function(original, continuation) {
   merged
 }
 # continuation_state: what the retained object currently is, from its hash, its sidecar's hash and the
-# continuation record (if any): "pending" (the stopped state as delivered), "applied" (the continued
+# continuation record (if any): "pending" (the stopped state as saved), "applied" (the continued
 # model this script installed) or "unknown" (neither; nothing is touched).
 continuation_state <- function(current_hash, sidecar_hash, record) {
   if (!is.null(record)) return(if (identical(current_hash, record$continued_model_hash)) "applied" else "unknown")
@@ -182,13 +139,8 @@ annotate_manifest <- function(manifest, new_output_file, note) {
 log_line("start; quick_run =", quick_run, "; K =", continue_K, "; ceiling =", continue_ceiling, "; chunk =", fit_chunk, "; run_id", run_id)
 
 # ---- The searchK run's state ----
-# INPUT : models/common_input.rds, run_key.txt, stm_K010.rds (+ sidecar), fit_record_K010.rds,
-#         gamma_path_K010.csv, continuation_K010_record.rds (if a continuation was applied before).
-# DOES  : load; decide the state of the retained object from its hash; in the pending state verify that
-#         the retained object is the stopped state its sidecar describes and that its settings are the
-#         searchK run's (every item recorded; any failure stops the script before anything is touched).
-# OUTPUT: ci, run_key, model_orig (the stopped state), fit_record_orig, gamma_orig, sidecar_orig, state,
-#         its0 (the iteration the continuation starts from), verify table.
+# Loads the common input, the retained K = 10 model, its fit record and sidecar. In the pending state, checks
+# that the model hash and settings match the sidecar; any failure stops before files are touched.
 tag <- k_tag(continue_K)
 common_input_path <- file.path(model_dir, "common_input.rds")
 model_path        <- worker_file(continue_K, "stm")
@@ -240,7 +192,7 @@ n_tokens_fit <- sum(model_orig$settings$dim$wcounts$x)
 verify <- list()
 add_verify <- function(item, value, pass) verify[[length(verify) + 1L]] <<- tibble(stage = "starting state", check = item, detail = as.character(value), pass = isTRUE(pass))
 so <- model_orig$settings
-add_verify("retained object hash equals its sidecar's output_hash (the stopped state as delivered) or the recorded continuation", started_from_hash, state == "applied" || identical(current_hash, sidecar_orig$output_hash))
+add_verify("retained object hash equals its sidecar's output_hash (the stopped state as saved) or the recorded continuation", started_from_hash, state == "applied" || identical(current_hash, sidecar_orig$output_hash))
 add_verify("stopped state: not converged, stopped by the ceiling, bound trace length equals the iteration count", sprintf("its %d; converged %s; stopits %s; bound length %d", its0, model_orig$convergence$converged, model_orig$convergence$stopits, length(model_orig$convergence$bound)),
            !model_orig$convergence$converged && isTRUE(model_orig$convergence$stopits) && length(model_orig$convergence$bound) == its0)
 add_verify("iterations equal the fit record's last chunk and the L1 path record has one row per iteration", sprintf("its %d; last chunk %d; L1 rows %d", its0, tail(fit_record_orig$chunk_table$iterations_after, 1), nrow(gamma_orig)),
@@ -264,17 +216,9 @@ if (nrow(blocking_fail)) { print(as.data.frame(blocking_fail), right = FALSE); s
 log_line("starting state verified:", sum(verify_tbl$pass, na.rm = TRUE), "of", nrow(verify_tbl), "checks; its0 =", its0, "; loaded in", round(secs_since(t_load)), "s")
 
 # ---- Continuation of the EM through stm's restart ----
-# INPUT : model_orig (pending) or the continued model (applied, ceiling raised); ci; the partial model
-#         if a previous run was interrupted.
-# DOES  : install the searchK run's opt.mu replacement (pmax cap, per-call record) in the stm namespace;
-#         repeat stm(documents, vocab, K, prevalence, content, data, <the searchK settings>,
-#         max.em.its = target, model = model) in chunks until converged or at the ceiling, the partial
-#         model saved after every chunk, the console appended to fit_console_K010_continuation.log, the
-#         L1 calls appended to gamma_path_K010_continuation.csv (numbered after the searchK run's), a
-#         memory sampler recording this process; then save the continued model, install it as the
-#         retained object (the stopped object renamed, its sidecar re-pointed), write the merged fit
-#         record and the continuation record.
-# OUTPUT: model_new; record; fit_record_merged; the files above.
+# Installs the capped opt.mu, then calls stm(..., model = model) in chunks until converged or at the ceiling,
+# saving the partial model after each chunk. Installs the continued model as stm_K010.rds, renames the
+# stopped one, and writes the merged fit record and the continuation record.
 fit_needed <- state == "pending" || (!model_new$convergence$converged && continue_ceiling > model_new$convergence$its)
 if (state == "applied" && !fit_needed) log_line("continuation already applied (run", record$run_id, "); its", record$its_to, "; converged", record$converged, "; regenerating the tables and sidecars")
 if (fit_needed) {
@@ -381,15 +325,8 @@ if (fit_needed) {
 }
 
 # ---- Fit-accounting checks on the continued model ----
-# INPUT : model_orig (the stopped state), model_new (the retained, continued model), record,
-#         fit_record_orig, fit_record_merged, the L1 records, the console logs, the K = 20 / 30 objects.
-# DOES  : inexpensive checks only (no diagnostic is recomputed): the bound trace up to the starting
-#         iteration is preserved exactly; iteration counts, ceiling and convergence flag consistent with
-#         stm's rule; documents, vocabulary, word counts, design matrix (values and column names) and
-#         every setting identical apart from the ceiling and the recorded call; theta and beta valid and
-#         theta consistent with eta; bound increased; L1 record and console complete; file hashes; the
-#         K = 20 and K = 30 objects still equal their sidecars.
-# OUTPUT: checks table; sd (the settings comparison); trace and chunk tables.
+# Bound trace preserved; iterations and convergence consistent; inputs, design matrix and settings identical
+# apart from the ceiling; theta and beta valid; bound increased; K = 20 and K = 30 unchanged.
 set_stage("qc")
 its_new   <- model_new$convergence$its
 bound_new <- model_new$convergence$bound
@@ -443,12 +380,8 @@ checks_tbl <- bind_rows(verify_tbl, bind_rows(checks))
 log_line("checks:", sum(checks_tbl$pass, na.rm = TRUE), "of", nrow(checks_tbl), "pass;", sum(!checks_tbl$pass, na.rm = TRUE), "fail")
 
 # ---- Tables ----
-# INPUT : the objects above; the sampler traces.
-# DOES  : the continuation summary (every reported quantity), the full convergence trace with the phase
-#         of each iteration and the per-iteration E- and M-step seconds parsed from both consoles, the
-#         merged chunk table, the continuation's L1 record, the resource trace, the checks, the settings
-#         comparison and the file inventory.
-# OUTPUT: CSV files under the continuation folder's tables/.
+# Continuation summary, convergence trace, chunk table, L1 record, resource trace, checks, settings
+# comparison and file inventory.
 Kk <- continue_K
 trace_tbl <- bind_rows(lapply(record$trace_files, function(p) read_csv(p, show_col_types = FALSE, progress = FALSE, col_types = cols(time_utc = col_character(), stage = col_character(), .default = col_double())) |> mutate(trace_file = basename(p))))
 trace_fit <- if (nrow(trace_tbl)) trace_tbl |> filter(stage %in% "fit") else trace_tbl
@@ -513,12 +446,8 @@ write_table(sd |> mutate(K = Kk, expected_difference = ignored) |> select(K, lea
 write_table(model_files_tbl,   sprintf("continuation_%s_files.csv", tag))
 
 # ---- Provenance sidecars ----
-# INPUT : the tables; the model, fit record and record files.
-# DOES  : one <output>.manifest.yml per continuation output and for the retained objects this script
-#         replaced (the continued model, the merged fit record, the continuation record); inputs are the
-#         stopped state, the common input, the searchK fit record and L1 record, both scripts, and the
-#         searchK run's own inputs inherited from the stopped object's sidecar.
-# OUTPUT: *.manifest.yml next to each output.
+# One <output>.manifest.yml per output and for the replaced model files; inputs include the stopped model,
+# the common input, both scripts and the searchK run's own inputs.
 set_stage("report")
 git_commit <- tryCatch(system2("git", c("-C", project_dir, "rev-parse", "--short", "HEAD"), stdout = TRUE, stderr = FALSE), error = function(e) "")
 if (length(git_commit) == 0L) git_commit <- ""

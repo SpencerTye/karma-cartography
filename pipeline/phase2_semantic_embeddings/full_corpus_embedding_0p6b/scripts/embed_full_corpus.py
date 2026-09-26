@@ -1,29 +1,15 @@
 #!/usr/bin/env python
-"""Full-corpus real embedding run: Qwen3-Embedding-0.6B on the RTX 3090 via TEI (float16).
+"""Embed all 902,144 documents of the canonical Phase 1 table with Qwen3-Embedding-0.6B via TEI.
 
-Embeds *every* document (all 902,144 rows) of the canonical Phase 1 message-event table with the
-established Phase 2 TEI setup, keeps each embedding linked to its original doc_key, and measures
-the run: an early time-to-completion estimate once enough real batches have run, then the actual
-totals at completion.
+Inputs: the canonical table and the corpus-wide token counts (read only). Uses the benchmark's TEI
+client, sampler and packer from throughput_benchmark.py, no vram_cap shim, max_batch_tokens 327,680
+(262,144 fallback only if the memory check exceeds 19 GiB).
+Outputs: embeddings keyed to doc_key, run measurements, an early ETA and REPORT.md.
 
-This is the production embedding run for the complete canonical dataset, not a benchmark or a
-feasibility test. It reuses the benchmark's TEI client, NVML sampler, provenance-manifest writer and
-token packer (imported from ../../benchmark_qwen3_4b_0p6b_throughput/scripts/
-throughput_benchmark.py) but launches TEI WITHOUT the vram_cap shim and imposes no allocator cap:
-max_batch_tokens is fixed at 327,680 (set from the completed three-day run measured
-this at an 18.48 GiB whole-card peak). A short real-batch memory check runs first; the budget is
-reduced to the single documented fallback (262,144) only if the measured whole-card GPU memory
-actually exceeds 19 GiB.
-
-This is the full-corpus sibling of ../three_day_embedding_0p6b/scripts/embed_three_days.py. It does
-not read, modify or overwrite that run or its outputs; it reads the canonical Phase 1 table and the
-existing corpus-wide token-count table read-only, and it does not retokenize the corpus.
-
-Stages (run inside the WSL2 venv):
-  prepare   verify inputs, build the ordered full-corpus stream, record the environment
-  embed     launch TEI (no shim), untimed warm-up + memory check, embed every document,
-            emit the first ETA, run to completion, save embeddings + measurements, verify
-  report    render REPORT.md from the recorded evidence
+Stages (run in the WSL2 venv):
+  prepare   verify inputs, build the ordered stream, record the environment
+  embed     start TEI, warm up and check memory, embed everything, save and verify
+  report    render REPORT.md
   all       prepare, embed, report
 """
 
@@ -42,7 +28,7 @@ import numpy as np
 SCRIPT_PATH = Path(__file__).resolve()
 RUN_DIR = SCRIPT_PATH.parents[1]  # full_corpus_embedding_0p6b/
 PHASE2_DIR = SCRIPT_PATH.parents[2]  # phase2_semantic_embeddings/
-PROJECT_DIR = SCRIPT_PATH.parents[4]  # repository root 
+PROJECT_DIR = SCRIPT_PATH.parents[4]  # repository root
 BENCH_SCRIPTS = PHASE2_DIR / "benchmark_qwen3_4b_0p6b_throughput" / "scripts"
 sys.path.insert(0, str(BENCH_SCRIPTS))
 import throughput_benchmark as tb  # noqa: E402
@@ -411,13 +397,9 @@ def stage_embed(args):
     if len(texts) != n_docs:
         raise SystemExit("text/row count mismatch")
 
-    # TEI 1.9.3 rejects an empty input string with HTTP 400 ("`inputs` cannot be empty"), and the
-    # canonical corpus contains one empty-text comment (t1_ovhv2aj; measured 2026-09-10). To keep
-    # exactly one embedding per doc_key (the required 902,144 rows) every empty/null text is
-    # embedded from a minimal single-space placeholder, recorded here for full transparency. The
-    # token budget/packing is unchanged (it uses the artifact n_tokens_4B); the placeholder adds a
-    # small, documented amount to TEI's own x-compute-tokens (a " " tokenizes to 2 vs the empty
-    # string's recorded 1).
+    # TEI 1.9.3 rejects empty inputs (HTTP 400) and the corpus has one empty comment (t1_ovhv2aj).
+    # Empty or null texts are embedded as a single space so every doc_key gets a row; each
+    # substitution is recorded. Packing still uses n_tokens_4B (" " is 2 tokens vs 1 for "").
     empty_placeholder = " "
     empty_substitutions = []
     for i, tx in enumerate(texts):

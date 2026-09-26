@@ -1,38 +1,11 @@
 #!/usr/bin/env python3
-"""
-Three-day GPU UMAP + HDBSCAN feasibility test (Phase 3, blind semantic
-structure discovery).
+"""GPU UMAP + HDBSCAN feasibility test on the three-day 0.6B embeddings (101,722 x 1024).
 
-Runs, on the existing three-day 0.6B embedding matrix (101,722 x 1024, float32,
-L2-normalized):
-
-  1. GPU UMAP (RAPIDS cuML)  : n_neighbors=15, n_components=5, min_dist=0.0, metric=cosine
-  2. GPU HDBSCAN (RAPIDS cuML): min_cluster_size=10, min_samples=10, metric=euclidean,
-                                cluster_selection_method=eom
-
-on the 5-D UMAP output. The analytical settings above are FIXED by the task and
-are never tuned or swept here.
-
-The script measures, for each operation, wall-clock runtime, peak WHOLE-CARD GPU
-memory (NVML, all processes on the device), and peak host RAM; preserves every
-HDBSCAN diagnostic cuML exposes (labels, membership probabilities, cluster
-persistence, condensed / single-linkage / minimum-spanning trees); records
-directly observed effects of repeated / tied embeddings; and writes keyed
-outputs + provenance manifests + diagnostic figures.
-
-GPU memory ceiling: whole-card usage must stay <= --ceiling-mib (default 21504
-MiB = 21 GiB). We do NOT probe or maximize usage; we measure. If a fit cannot run
-within the limit (OOM, or measured peak over the ceiling), we stop and report the
-measured failure rather than changing any analytical setting.
-
-Reproducibility note: cuML UMAP is run with the fixed config's default
-random_state=None. Per the cuML docs, setting random_state "enables reproducible
-embeddings, but at the cost of slower training and increased memory usage", and
-for N>50K build_algo='auto' selects NN-Descent whose KNN graph is itself
-non-deterministic. Because this is a runtime/peak-memory feasibility measurement,
-seeding would distort the very quantities being measured, so the run is left
-unseeded and outputs are therefore run-specific. HDBSCAN is deterministic given
-its input (subject to tie-breaking among equal distances).
+UMAP to 5-D (n_neighbors=15, min_dist=0.0, cosine), then HDBSCAN (min_cluster_size=10,
+min_samples=10, eom) on the result, both with RAPIDS cuML.
+Outputs: coordinates, labels, HDBSCAN diagnostics and trees keyed to doc_key, runtime and peak
+GPU/host memory per step, manifests and figures. Stops and reports if a step exceeds
+--ceiling-mib (default 21504). UMAP is unseeded, so outputs are run-specific.
 """
 
 from __future__ import annotations
@@ -52,7 +25,7 @@ from datetime import datetime, timezone
 import numpy as np
 
 # ----------------------------------------------------------------------------
-# Fixed task configuration (do NOT change these values)
+# Fixed analysis settings (do not change)
 # ----------------------------------------------------------------------------
 UMAP_DEFAULTS = dict(n_neighbors=15, n_components=5, min_dist=0.0, metric="cosine")
 HDBSCAN_DEFAULTS = dict(
@@ -535,7 +508,7 @@ def main():
     ap.add_argument(
         "--figures-only", action="store_true", help="rebuild figures from saved results"
     )
-    # Fixed analytical settings (defaults ARE the task spec; not tuned).
+    # Fixed analysis settings (not tuned).
     ap.add_argument(
         "--umap-n-neighbors", type=int, default=UMAP_DEFAULTS["n_neighbors"]
     )

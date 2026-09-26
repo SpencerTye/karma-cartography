@@ -1,19 +1,8 @@
 #!/usr/bin/env bash
-# ---------------------------------------------------------------------------
-# RAPIDS cuML environment for the FULL-CORPUS GPU UMAP + HDBSCAN baseline
-# (Phase 3). Reuses the SAME isolated uv venv built for the three-day
-# feasibility run (~/venvs/rapids-umap-hdbscan); does NOT touch the existing
-# Phase 2 (socialmediadgg-phase2) or FAISS (faiss-bench) venvs.
-#
-# Idempotent: if the venv already exists it is reused as-is (the full-corpus
-# run must use the identical software stack as the validated three-day run).
-# This script simply (re-)captures the exact resolved environment into this
-# deliverable's environment/ directory.
-#
-# Overridable via env vars:
-#   RAPIDS_VENV   target venv path        (default ~/venvs/rapids-umap-hdbscan)
-#   ENV_OUT_DIR   environment capture dir (default this deliverable's environment/)
-# ---------------------------------------------------------------------------
+# RAPIDS cuML environment for the full-corpus GPU UMAP + HDBSCAN baseline (Phase 3).
+# Reuses the three-day run's venv unchanged (creates it only if missing) and records the exact
+# package versions and GPU/CUDA details in ../environment/.
+# Env (optional): RAPIDS_VENV (default ~/venvs/rapids-umap-hdbscan), ENV_OUT_DIR (default ../environment).
 set -uo pipefail
 
 VENV="${RAPIDS_VENV:-$HOME/venvs/rapids-umap-hdbscan}"

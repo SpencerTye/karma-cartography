@@ -1,45 +1,11 @@
-# July 2026 r/politics sample - first pilot Structural Topic Model (STM), K = 40
-#
-# Purpose: fit one auditable K = 40 STM (stm package, variational EM) on exactly the
-# textual representation of the delivered Tier 2 LDA run (july2026_politics_lda_topics_tier2.R):
-# the same documents, tokeniser, 310-word Tier 2 stopword list, vocabulary rule and
-# modelable-document rule, so that a later LDA-STM comparison is like for like. Topic
-# prevalence is allowed to vary with the document type (comment / submission) and with
-# progression through July 2026 (a B-spline of the fractional day). No content covariate,
-# no other covariate, no K search, no interpretation of topics: this is a workflow, runtime,
-# resource, linkage and diagnostics pilot. Every STM document keeps its doc_key (Reddit
-# fullname) so topic measurements join back to the source record, its author, thread and
-# parent.
-#
-# What the script does, in order:
-#   1. rebuilds the Tier 2 representation with the delivered code (documents, steps 1-8,
-#      vocabulary, document-term matrix, model status, the 5% held-out split for the
-#      carried 'split' column) and reconciles every count against the delivered Tier 2
-#      artifacts and the metadata inventory; discrepancies are reported, never repaired;
-#   2. converts the modelable documents to the stm list format and accounts for every
-#      document, token and term through the conversion; builds the covariates;
-#   3. fits the STM (spectral initialisation, up to STM_MAX_EM_ITS EM iterations, default
-#      100, tolerance 1e-5) in the main process with a background memory sampler, saves
-#      the model object at once (later runs load it from models/ under a run key);
-#   4. computes the STM diagnostics (semantic coherence, exclusivity, residual dispersion,
-#      labels, representative documents, topic correlations, covariate effects by the
-#      method of composition) and the prevalence tables by type and UTC day;
-#   5. verifies that every theta row links back to its source record, author, thread and
-#      parent, and that the stm documents equal a second tokenisation of the stored text;
-#   6. writes tables, figures, retained model artifacts and provenance sidecars.
-# Environment switches: STM_QUICK=<folder> runs a reduced smoke test into that folder
-# (STM_QUICK_N documents, STM_QUICK_ITS iterations); STM_MAX_EM_ITS overrides the EM
-# ceiling; STM_MEMORY_SAMPLER=0 disables the background sampler; STM_REFIT=1 ignores the
-# model cache. The source Parquet files and every delivered artifact are read-only. All
-# outputs go under r_analysis_outputs/stm_pilot_k40/ (this script owns that folder and
-# clears its tables/ and figures/ at the start of each run). Topics are identified only by
-# their stm index; nothing here names or interprets a topic.
+# First pilot structural topic model (STM), K = 40, on the July 2026 r/politics sample.
+# Uses the text representation of the Tier 2 LDA run (july2026_politics_lda_topics_tier2.R), rebuilt here
+# and checked against its saved outputs. Prevalence varies with doc_type and a B-spline of the day of July.
+# Writes diagnostics, prevalence tables, linkage checks, figures and the model to r_analysis_outputs/stm_pilot_k40/.
+# Env: STM_QUICK=<folder> (smoke test; STM_QUICK_N, STM_QUICK_ITS), STM_MAX_EM_ITS (default 100),
+#      STM_MEMORY_SAMPLER=0, STM_REFIT=1.
 
 # ---- Setup: packages, paths, parameters, output directories ----
-# INPUT : none.
-# DOES  : load packages; define paths, the delivered Tier 2 parameters (unchanged), the
-#         STM pilot settings and the implementation settings; create and clear folders.
-# OUTPUT: parameter objects; figures/, tables/ and models/ directories.
 suppressPackageStartupMessages({
   library(nanoparquet); library(dplyr); library(tidyr); library(stringi); library(Matrix); library(readxl)
   library(stm); library(ps); library(ggplot2); library(scales); library(readr); library(digest); library(yaml); library(patchwork)
@@ -67,7 +33,7 @@ project_dir       <- Sys.getenv("KC_REPO_ROOT", unset = getwd())
 comments_dir      <- file.path(project_dir, "data_sample/comments/2026-07")
 submissions_dir   <- file.path(project_dir, "data_sample/submissions/2026-07")
 script_path       <- file.path(project_dir, "july2026_politics_stm_pilot_k40.R")
-tier2_dir         <- file.path(project_dir, "r_analysis_outputs/lda_topics_tier2")            # delivered run (read-only)
+tier2_dir         <- file.path(project_dir, "r_analysis_outputs/lda_topics_tier2")            # original Tier 2 run (read-only)
 k40_dir           <- file.path(project_dir, "r_analysis_outputs/lda_topics_tier2_k40_k80")    # K = 40 companion package (read-only)
 inventory_dir     <- file.path(project_dir, "r_analysis_outputs/metadata_inventory")          # metadata inventory (read-only)
 stopword_workbook <- file.path(project_dir, "r_analysis_outputs/stopword_lists/curation/stopword_curation_tier2_cumulative_310_words.xlsx")
@@ -83,7 +49,7 @@ dir.create(model_dir, recursive = TRUE, showWarnings = FALSE)
 # Tables and figures are regenerated on every run; models/ is a keyed cache of the fit and its input.
 invisible(file.remove(list.files(c(fig_dir, tab_dir), pattern = "\\.(csv|png|yml)$", full.names = TRUE)))
 
-# Delivered Tier 2 parameters (unchanged; they reproduce the documents, vocabulary and split).
+# Tier 2 parameters (unchanged; they reproduce the documents, vocabulary and split).
 heldout_share          <- 0.05
 split_seed             <- 20260731L
 min_token_chars        <- 2L
@@ -133,10 +99,8 @@ stage_file <- file.path(model_dir, "stage_marker.txt")
 begin_stage <- function(name) writeLines(name, stage_file)
 log_line("start; quick_run =", quick_run, "; K =", K, "; max EM iterations =", max_em_its, "; run_id", run_id)
 
-# ---- Stopword list: the Tier 2 workbook (read-only; the delivered rule) ----
-# INPUT : the curation workbook.
-# DOES  : read the 'word' column of the Tier 2 sheet exactly as stored; record its SHA256.
-# OUTPUT: stopword_list (character, 310); workbook_hash.
+# ---- Stopword list: the Tier 2 workbook (read-only) ----
+# Reads the 'word' column of the 310-word sheet as stored and records its SHA256.
 begin_stage("read")
 workbook_hash <- sha256(stopword_workbook)
 tier2_raw     <- read_excel(stopword_workbook, sheet = stopword_sheet, col_types = "text")
@@ -145,12 +109,8 @@ token_regex   <- "\\p{L}+(?:'\\p{L}+)*"
 log_line("workbook read:", length(stopword_list), "entries; hash", workbook_hash)
 
 # ---- Read source data (read-only) ----
-# INPUT : 7 comment Parquet files + 1 submission Parquet file.
-# DOES  : read every file with nanoparquet and stack; keep the columns the delivered
-#         document table uses plus the metadata fields preserved for linkage (score,
-#         num_comments, upvote_ratio, url) and the file of origin. Column selection
-#         only; no rows dropped. INT64 columns arrive as double.
-# OUTPUT: comments; submissions; source_files (bytes, hash, rows per file).
+# Reads the 7 comment files and 1 submission file with nanoparquet, keeping the document-table columns plus
+# score, num_comments, upvote_ratio and url. No rows are dropped; INT64 columns arrive as double.
 read_type <- function(files) bind_rows(lapply(files, function(f) { x <- as_tibble(as.data.frame(read_parquet(f))); x$source_file <- basename(f); x }))
 comments_raw    <- read_type(comment_files)
 submissions_raw <- read_type(submission_files)
@@ -170,13 +130,9 @@ n_submissions_all <- nrow(submissions)
 mark_stage("read")
 log_line("read:", n_comments_all, "comments,", n_submissions_all, "submissions")
 
-# ---- Document table (the delivered rule) ----
-# INPUT : comments; submissions.
-# DOES  : one document per source record; comment text = body; submission text =
-#         title, one space, selftext; doc_key = Reddit fullname ('t1_' + id, 't3_' + id).
-#         The preserved metadata fields are attached afterwards by doc_key so that the
-#         delivered construction is copied unchanged.
-# OUTPUT: docs (source order: comments then submissions); extra (preserved fields by doc_key).
+# ---- Document table (as in the Tier 2 run) ----
+# One document per record: comment text = body, submission text = title + " " + selftext, doc_key = Reddit
+# fullname. Extra metadata is joined afterwards by doc_key so the original construction stays unchanged.
 begin_stage("document_table")
 docs <- bind_rows(
   comments |>
@@ -201,12 +157,9 @@ extra <- bind_rows(
 stopifnot(identical(extra$doc_key, docs$doc_key))
 mark_stage("document_table")
 
-# ---- Text processing (the delivered steps 1-8; reference-only counts omitted) ----
-# INPUT : docs$text.
-# DOES  : case folding; U+2019 -> '; URLs removed; letter-run tokens with internal
-#         apostrophes; trailing 's stripped; tokens shorter than min_token_chars removed;
-#         the 310 Tier 2 entries removed; tokens of removal-marker-only documents excluded.
-# OUTPUT: tok / tdoc; per-document token counts on docs.
+# ---- Text processing (Tier 2 steps 1-8; reference-only counts omitted) ----
+# Lower case, U+2019 -> ', URLs removed, letter-run tokens, trailing 's stripped, short tokens and the 310
+# stopwords removed, marker-only documents excluded.
 begin_stage("tokenize")
 removal_markers  <- c("[deleted]", "[removed]", "[ Removed by Reddit ]")
 docs$marker_only <- stri_trim_both(docs$text) %in% removal_markers
@@ -243,11 +196,8 @@ rm(in_marker_doc)
 mark_stage("tokenize")
 log_line("tokenize:", n_letter_tokens, "letter tokens;", sum(docs$n_tokens_stop), "Tier 2 stopword tokens removed")
 
-# ---- Vocabulary and document-term matrix (the delivered rule) ----
-# INPUT : tok / tdoc.
-# DOES  : terms kept when min_document_frequency <= df <= max_document_share x
-#         non-marker documents; one dtm row per source document; model_status.
-# OUTPUT: vocabulary; dtm_all; vocabulary_table; docs$model_status; docs$n_tokens_modeled.
+# ---- Vocabulary and document-term matrix (Tier 2 rule) ----
+# Terms kept when min_document_frequency <= df <= max_document_share of non-marker documents.
 begin_stage("vocabulary_dtm")
 vocab_all  <- sort(unique(tok), method = "radix")
 term_index <- match(tok, vocab_all)
@@ -281,12 +231,8 @@ docs <- docs |>
 mark_stage("vocabulary_dtm")
 log_line("dtm:", n_vocabulary, "terms;", sum(docs$model_status == "modeled"), "modeled documents")
 
-# ---- Tier 2 training / held-out split (the delivered rule; carried, not used by the STM) ----
-# INPUT : docs.
-# DOES  : reproduce the seeded 5% held-out sample so every STM document carries the
-#         Tier 2 'split' label for later comparison. The STM is fitted on all modeled
-#         documents; the split does not enter the STM.
-# OUTPUT: docs$split; n_train; n_heldout.
+# ---- Tier 2 training / held-out split (carried as a label only) ----
+# Reproduces the seeded 5% split for later comparison; the STM is fitted on all modeled documents.
 begin_stage("split")
 modeled_rows_all <- which(docs$model_status == "modeled")
 n_modeled        <- length(modeled_rows_all)
@@ -301,14 +247,9 @@ docs$split[train_rows]   <- "train"
 docs$split[heldout_rows] <- "held-out"
 mark_stage("split")
 
-# ---- Reconciliation against the delivered Tier 2 artifacts and the inventory (read-only) ----
-# INPUT : the delivered accounting tables, vocabulary table, the K = 40 document table,
-#         the cached theta_K040_seed1.rds and three inventory tables, with their manifests.
-# DOES  : hash every artifact read and compare with its manifest; compare every count of
-#         this run's representation with the delivered values (documents by status and
-#         type, tokens, vocabulary, per-term df/tf, per-document status/split/tokens,
-#         length summary, source-file hashes). Discrepancies are reported, not repaired.
-# OUTPUT: input_integrity; tier2_reconciliation; discrepancies; delivered tables.
+# ---- Reconciliation against the saved Tier 2 outputs and the inventory (read-only) ----
+# Hashes every file read against its manifest and compares this run's counts (documents, tokens, vocabulary,
+# per-term and per-document values, length summary) with the saved values. Discrepancies are only reported.
 begin_stage("reconciliation")
 tier2_tab <- file.path(tier2_dir, "tables"); k40_tab <- file.path(k40_dir, "tables"); inv_tab <- file.path(inventory_dir, "tables")
 artifact_paths <- c(
@@ -329,10 +270,10 @@ input_integrity <- tibble(role = names(artifact_paths), path = unname(artifact_p
          sha256_in_manifest = vapply(path, function(p) as.character(manifest_field(p, "output_hash")), character(1)),
          hash_equals_manifest = exists & !is.na(sha256_in_manifest) & sha256_now == sha256_in_manifest)
 read_if <- function(role, ...) if (file.exists(artifact_paths[[role]])) read_csv(artifact_paths[[role]], show_col_types = FALSE, progress = FALSE, ...) else NULL
-delivered_accounting <- read_if("document_accounting")
-delivered_report     <- read_if("text_processing_report")
-delivered_length     <- read_if("document_length_summary")
-delivered_vocabulary <- read_if("vocabulary", col_types = cols(term = col_character(), .default = col_guess()), na = character(), trim_ws = FALSE)
+saved_accounting <- read_if("document_accounting")
+saved_report     <- read_if("text_processing_report")
+saved_length     <- read_if("document_length_summary")
+saved_vocabulary <- read_if("vocabulary", col_types = cols(term = col_character(), .default = col_guess()), na = character(), trim_ws = FALSE)
 inventory_source     <- read_if("inventory_source_files")
 inventory_linkage    <- read_if("inventory_linkage_counts", col_types = cols(.default = col_character()))
 inventory_parent     <- read_if("inventory_parent_linkage")
@@ -353,7 +294,7 @@ add_recon <- function(item, tier2_value, this_value, source) {
                                           equal = !is.na(tier2_value) & !is.na(this_value) & as.character(tier2_value) == as.character(this_value),
                                           source = source)
 }
-acc_row <- function(stage) if (is.null(delivered_accounting)) rep(NA, 3) else unlist(delivered_accounting[delivered_accounting$stage == stage, c("comments", "submissions", "total")])
+acc_row <- function(stage) if (is.null(saved_accounting)) rep(NA, 3) else unlist(saved_accounting[saved_accounting$stage == stage, c("comments", "submissions", "total")])
 status_stage <- c("not modeled: removal marker only" = "not modeled: removal marker only",
                   "not modeled: no letter tokens" = "not modeled: no letter tokens",
                   "not modeled: only single-character tokens or stopwords" = "not modeled: only single-character tokens or stopwords",
@@ -370,7 +311,7 @@ for (i in 1:3) {
   add_recon(sprintf("modeled tokens (%s)", lab), acc_row("modeled tokens")[i],
             c(sum(docs$n_tokens_modeled[docs$doc_type == "comment"]), sum(docs$n_tokens_modeled[docs$doc_type == "submission"]), sum(docs$n_tokens_modeled))[i], "document_accounting.csv")
 }
-rep_item <- function(item) if (is.null(delivered_report)) NA else delivered_report$value[delivered_report$item == item]
+rep_item <- function(item) if (is.null(saved_report)) NA else saved_report$value[saved_report$item == item]
 add_recon("vocabulary size (terms modeled)", rep_item("vocabulary size (terms modeled)"), n_vocabulary, "text_processing_report.csv")
 add_recon("distinct candidate terms (vocabulary before pruning)", rep_item("distinct candidate terms in non-marker documents (vocabulary before pruning)"), n_terms_candidate, "text_processing_report.csv")
 add_recon("terms below the document-frequency floor", rep_item("step 9: terms in fewer than 5 non-marker documents removed"), sum(term_below_floor), "text_processing_report.csv")
@@ -378,12 +319,12 @@ add_recon("tokens removed with rare terms", rep_item("step 9: tokens removed wit
 add_recon("terms above the document-share ceiling", rep_item("step 9: terms in more than 50% of non-marker documents removed"), sum(term_above_ceiling), "text_processing_report.csv")
 add_recon("candidate tokens in non-marker documents", rep_item("candidate tokens in non-marker documents"), n_candidate_tokens - n_tokens_in_marker_docs, "text_processing_report.csv")
 add_recon("tokens modeled", rep_item("tokens modeled"), sum(docs$n_tokens_modeled), "text_processing_report.csv")
-if (!is.null(delivered_vocabulary)) {
-  vj <- delivered_vocabulary |> select(term, d_df = document_frequency, d_tf = term_frequency, d_kept = kept) |>
+if (!is.null(saved_vocabulary)) {
+  vj <- saved_vocabulary |> select(term, d_df = document_frequency, d_tf = term_frequency, d_kept = kept) |>
     full_join(vocabulary_table |> select(term, document_frequency, term_frequency, kept), by = "term")
-  add_recon("vocabulary.csv: rows", nrow(delivered_vocabulary), nrow(vocabulary_table), "vocabulary.csv")
-  add_recon("vocabulary.csv: terms present in both", nrow(delivered_vocabulary), sum(!is.na(vj$d_df) & !is.na(vj$document_frequency)), "vocabulary.csv")
-  add_recon("vocabulary.csv: rows with equal document_frequency, term_frequency and kept", nrow(delivered_vocabulary),
+  add_recon("vocabulary.csv: rows", nrow(saved_vocabulary), nrow(vocabulary_table), "vocabulary.csv")
+  add_recon("vocabulary.csv: terms present in both", nrow(saved_vocabulary), sum(!is.na(vj$d_df) & !is.na(vj$document_frequency)), "vocabulary.csv")
+  add_recon("vocabulary.csv: rows with equal document_frequency, term_frequency and kept", nrow(saved_vocabulary),
             sum(!is.na(vj$d_df) & !is.na(vj$document_frequency) & vj$d_df == vj$document_frequency & vj$d_tf == vj$term_frequency & vj$d_kept == vj$kept), "vocabulary.csv")
   rm(vj)
 }
@@ -404,11 +345,11 @@ if (!is.null(theta_k40_keys)) {
   add_recon("theta_K040_seed1.rds: doc_key count", n_modeled, length(theta_k40_keys), "theta_K040_seed1.rds")
   add_recon("theta_K040_seed1.rds: doc_key set equals this run's modeled documents", TRUE, setequal(theta_k40_keys, docs$doc_key[modeled_rows_all]), "theta_K040_seed1.rds")
 }
-if (!is.null(delivered_length)) {
+if (!is.null(saved_length)) {
   ql <- function(x, p) quantile(x, p, type = 7, names = FALSE)
   for (tp in c("comment", "submission")) {
     x <- docs$n_tokens_modeled[docs$model_status == "modeled" & docs$doc_type == tp]
-    d <- delivered_length[delivered_length$doc_type == tp, ]
+    d <- saved_length[saved_length$doc_type == tp, ]
     vals <- c(docs = length(x), tokens = sum(x), min = min(x), p05 = ql(x, 0.05), p25 = ql(x, 0.25), median = ql(x, 0.5), mean = mean(x), p75 = ql(x, 0.75), p95 = ql(x, 0.95), max = max(x))
     for (nm in names(vals)) add_recon(sprintf("document_length_summary.csv: %s %s", tp, nm), as.character(signif(d[[nm]], 12)), as.character(signif(vals[[nm]], 12)), "document_length_summary.csv")
   }
@@ -430,23 +371,14 @@ add_recon("expected modelable submissions", 10719, count_by_type(docs$model_stat
 add_recon("expected modelable total", 857385, n_modeled, "earlier count")
 tier2_reconciliation <- bind_rows(recon)
 discrepancies <- tier2_reconciliation |> filter(!equal)
-rm(k40_table, delivered_vocabulary); invisible(gc())
+rm(k40_table, saved_vocabulary); invisible(gc())
 mark_stage("reconciliation")
 log_line("reconciliation:", sum(tier2_reconciliation$equal), "of", nrow(tier2_reconciliation), "items equal;", nrow(discrepancies), "discrepancies")
 
 # ---- STM input: documents, vocabulary, covariates ----
-# INPUT : dtm_all; docs; extra.
-# DOES  : restrict the document-term matrix to the modeled documents (all of them, in
-#         source order; a seeded subsample under STM_QUICK) and convert it with
-#         stm::asSTMCorpus to the list format (one 2 x n_terms integer matrix per
-#         document: 1-based term index, count). Account for every document, token and
-#         term across the conversion. Build the prevalence covariates: doc_type (factor,
-#         comment = reference level) and day_of_july = (created_utc - 2026-07-01 00:00
-#         UTC) / 86400, a continuous fractional day in [0, 31), entered as stm's
-#         B-spline basis s(day_of_july, df = 10). Record the basis knots. Measure the
-#         metadata coverage and the daily distribution of the STM documents.
-# OUTPUT: documents; vocab; meta_df; docs_stm; stm_input_accounting; covariate tables;
-#         metadata_coverage; documents_per_day; models/stm_input_K040_pilot.rds.
+# Converts the modeled documents to stm format (seeded subsample under STM_QUICK) and accounts for every
+# document, token and term. Covariates: doc_type (comment = reference) and day_of_july, the fractional day
+# since 2026-07-01 00:00 UTC, entered as s(day_of_july, df = 10).
 begin_stage("stm_input")
 modeled_rows <- modeled_rows_all
 if (quick_run) { set.seed(quick_seed); modeled_rows <- sort(sample(modeled_rows_all, min(quick_n, n_modeled))) }
@@ -544,12 +476,8 @@ mark_stage("stm_input")
 log_line("stm input:", length(documents), "documents;", length(vocab), "terms;", sum(doc_tokens_stm), "tokens; input key", substr(input_key, 1, 12))
 
 # ---- Background memory sampler ----
-# INPUT : this process id.
-# DOES  : start a second Rscript process that records, every sampler_interval seconds,
-#         this process's working set, private bytes and CPU times, the system's available
-#         memory, and the current stage marker, until a stop file appears. The sampler is
-#         the only system-wide memory evidence; process peaks are also read at stage ends.
-# OUTPUT: models/resource_trace_<run_id>.csv (copied to tables/ at the end).
+# A second Rscript process records this process's memory and CPU and the system's available memory every
+# sampler_interval seconds until a stop file appears.
 trace_csv  <- file.path(model_dir, sprintf("resource_trace_%s.csv", run_id))
 stop_file  <- file.path(model_dir, "sampler_stop.txt")
 if (file.exists(stop_file)) invisible(file.remove(stop_file))
@@ -581,15 +509,8 @@ if (memory_sampler_on) {
 }
 
 # ---- Fit the STM (or load it from the cache) ----
-# INPUT : documents; vocab; meta_df; the STM settings.
-# DOES  : stm(documents, vocab, K = 40, prevalence = ~ doc_type + s(day_of_july, df = 10),
-#         init.type = "Spectral", max.em.its, emtol = 1e-5, gamma.prior = "Pooled",
-#         sigma.prior = 0) in this process, with the console output (E-step seconds,
-#         per-word bound per iteration) written to models/fit_console_K040.log. The
-#         model object and a fit record (timings, CPU, memory, log) are saved at once
-#         under a run key of the input and the settings; a later run with the same key
-#         loads them instead of refitting (STM_REFIT=1 forces a refit).
-# OUTPUT: model (class STM); fit_record; models/stm_K040_pilot.rds; models/fit_record_K040.rds.
+# Spectral initialisation, Pooled gamma prior, console to models/fit_console_K040.log. The model and fit
+# record are cached under a run key; STM_REFIT=1 forces a refit.
 begin_stage("fit")
 run_key <- digest(list(input_key, K, paste(deparse(prevalence_formula), collapse = " "), init_type, stm_seed, max_em_its, emtol, gamma_prior, sigma_prior,
                        as.character(packageVersion("stm")), R.version.string), algo = "sha256")
@@ -628,10 +549,7 @@ if (fit_from_cache) {
 mark_stage("fit")
 
 # ---- The fitted model: dimensions, convergence and the EM iteration record ----
-# INPUT : model; fit_record.
-# DOES  : read K, N, V; parse the console log for the E-step and M-step seconds of every
-#         iteration and join them to the bound trace; check theta rows against the input.
-# OUTPUT: theta; beta (K x V); em_iterations; model_specification.
+# Reads K, N and V and joins per-iteration E- and M-step seconds from the console log to the bound trace.
 begin_stage("model_outputs")
 theta <- model$theta
 beta  <- exp(model$beta$logbeta[[1]])
@@ -670,15 +588,8 @@ model_specification <- tibble(
 mark_stage("model_outputs")
 
 # ---- Topic-word summaries and STM diagnostics ----
-# INPUT : model; documents; theta; beta.
-# DOES  : labelTopics (highest probability, FREX, lift, score; 20 words each, with each
-#         word's probability in the topic); semanticCoherence (stm, M = 10) and NPMI
-#         coherence over the same ten words computed here by document co-occurrence
-#         across all STM documents; exclusivity (M = 10, frexw = 0.7); checkResiduals
-#         (Taddy 2012 multinomial dispersion); topicCorr (simple, cutoff 0.01) and the
-#         full Pearson correlation of theta columns; the model's sigma as a correlation
-#         matrix in the (K - 1)-dimensional eta space. Each stage is timed.
-# OUTPUT: top_words; coherence, exclusivity, residuals; topic_correlation; sigma tables.
+# labelTopics, semanticCoherence and NPMI coherence (top 10 words), exclusivity (frexw = 0.7), checkResiduals,
+# topicCorr and full theta correlations, and sigma as a correlation matrix.
 begin_stage("diagnostics_labels")
 labels <- labelTopics(model, n = label_n_words, frexweight = frex_weight)
 word_prob <- function(k, terms) beta[k, match(terms, vocab)]
@@ -737,12 +648,8 @@ mark_stage("diagnostics_correlation")
 log_line("diagnostics: coherence mean", round(mean(coherence_stm), 2), "; exclusivity mean", round(mean(excl), 2), "; residual dispersion", round(resid$dispersion, 3))
 
 # ---- Topic prevalence: overall, by document type, by UTC day ----
-# INPUT : theta; docs_stm.
-# DOES  : expected proportion (mean theta), token-weighted share, dominant-topic counts,
-#         active-topic counts (share >= 0.1), by type and by UTC day (mean theta and
-#         token-weighted share per day); document concentration by length band; top
-#         author among each topic's dominant documents (a measurement, not a label).
-# OUTPUT: topic_prevalence_by_type; topic_prevalence_by_day; concentration tables.
+# Mean theta, token-weighted share, dominant and active-topic counts by type and UTC day; concentration by
+# length band; top author among each topic's dominant documents.
 begin_stage("prevalence")
 n_tok <- docs_stm$n_tokens_stm
 dominant <- max.col(theta, ties.method = "first")
@@ -777,14 +684,8 @@ top_author_by_topic <- docs_stm |> count(dominant_topic, author, name = "n") |> 
 mark_stage("prevalence")
 
 # ---- Covariate effects: estimateEffect (method of composition) ----
-# INPUT : model; meta_df.
-# DOES  : regress every topic's proportion on the prevalence covariates with 25 draws
-#         from the Global approximation of the variational posterior; read the
-#         coefficient tables; simulate expected proportions (100 coefficient draws each)
-#         for comment versus submission at the median day (pointestimate and difference)
-#         and along a 63-point grid of day_of_july for each document type (continuous).
-#         All quantities are on the expected-proportion scale of the linear model.
-# OUTPUT: prep (estimateEffect object); effect tables; models/estimate_effect_K040.rds.
+# 25 Global draws; simulated proportions for comment vs submission at the median day and along a 63-point
+# day grid per type, on the expected-proportion scale.
 begin_stage("effects")
 t_stage <- Sys.time()
 effect_formula <- as.formula(sprintf("1:%d ~ doc_type + s(day_of_july, df = %d)", K, spline_df))
@@ -840,14 +741,8 @@ mark_stage("effects")
 log_line("effects: estimated for", length(prep$topics), "topics")
 
 # ---- Representative documents ----
-# INPUT : model; theta; docs; docs_stm.
-# DOES  : (a) stm::findThoughts: the five documents with the highest proportion of each
-#         topic, no restriction; (b) the delivered Tier 2 rule: highest share among STM
-#         documents with at least 25 modeled tokens, one document per distinct stored
-#         text and per distinct author, ties by doc_key. Both carry identifiers, thread,
-#         parent, author, timestamp, split, tokens, the document's dominant topic and the
-#         full stored text.
-# OUTPUT: representative_documents (findThoughts); representative_documents_tier2rule.
+# (a) findThoughts, top five per topic; (b) the Tier 2 rule: highest share among documents with at least 25
+# tokens, one per distinct text and author, ties by doc_key. Both include identifiers and the full text.
 begin_stage("representative_documents")
 texts_stm <- docs$text[modeled_rows]
 ft <- findThoughts(model, texts = texts_stm, topics = topic_ids, n = n_representative)
@@ -871,13 +766,8 @@ representative_documents_tier2rule <- bind_rows(lapply(topic_ids, function(k) {
 mark_stage("representative_documents")
 
 # ---- Linkage verification after fitting ----
-# INPUT : theta; docs_stm; docs; comments; submissions; documents; the inventory tables.
-# DOES  : confirm that theta row i is the STM document i, that its doc_key matches exactly
-#         one source record with the same author, thread and parent identifiers, that
-#         the stm document equals a second tokenisation of the stored text (every
-#         sample_stride-th document), and count the author, thread and parent joins that
-#         remain recoverable, against the inventory's documented values where they apply.
-# OUTPUT: linkage_checks; recount_matches.
+# Checks each theta row against its doc_key, source record, author, thread and parent, re-tokenises every
+# sample_stride-th document, and compares join counts with the inventory.
 begin_stage("linkage")
 recompute_tokens <- function(text) {
   x <- stri_replace_all_regex(stri_replace_all_fixed(stri_trans_tolower(text), "\u2019", "'"), url_regex, " ", opts_regex = url_opts)
@@ -947,11 +837,7 @@ mark_stage("linkage")
 log_line("linkage:", sum(recount_matches), "of", length(sample_idx), "sampled documents re-tokenised identically")
 
 # ---- Topic summary table ----
-# INPUT : the diagnostics and prevalence objects above.
-# DOES  : one row per topic (stm index) with prevalence, coherence, exclusivity,
-#         document-type effects, day-curve range, nearest topic by document correlation,
-#         top author among dominant documents, and the ten top words by probability and FREX.
-# OUTPUT: topic_summary.
+# One row per topic: prevalence, coherence, exclusivity, type effects, day-curve range, nearest topic, top words.
 nearest_by_cor <- vapply(topic_ids, function(k) { v <- cor_theta[k, ]; v[k] <- -Inf; which.max(v) }, integer(1))
 topic_summary <- tibble(topic = topic_ids, topic_label = topic_labels, prevalence_rank = prevalence_rank, expected_proportion = expected_proportion, token_share = token_share,
                         documents_dominant = tabulate(dominant, K), share_documents_dominant = tabulate(dominant, K) / nrow(theta),
@@ -982,10 +868,7 @@ model_diagnostics <- tibble(
             sprintf("%.6f", tail(bound, 1) / n_tokens_total), round(fit_record$wall_seconds, 1)))
 
 # ---- Figures ----
-# INPUT : the tables above.
-# DOES  : PNG figures with a title, axis titles, tick labels and a legend where more than
-#         one series or a colour scale is shown; no annotations.
-# OUTPUT: figures/*.png.
+# PNG figures with titles, axis labels and legends where needed.
 begin_stage("figures")
 ink_series <- "#2a78d6"; ink_series_2 <- "#eb6834"; ink_red <- "#e34948"; ink_text <- "#0b0b0b"; ink_sub <- "#52514e"; ink_muted <- "#898781"
 grid_col <- "#e1e0d9"; axis_col <- "#c3c2b7"; mid_grey <- "#f0efec"
@@ -1075,10 +958,7 @@ save_fig("fig11_documents_per_day_stm_K040.png", fig11, 9, 6)
 mark_stage("figures")
 
 # ---- Stop the sampler; runtime and memory tables and figure ----
-# INPUT : the stage log; the sampler trace; fit_record.
-# DOES  : stop the sampler, read its trace (and the fitting run's trace when the model
-#         came from the cache), build the stage timings and the runtime figure.
-# OUTPUT: stage_timings; resource_trace; fig10.
+# Stops the sampler and builds the stage timings, resource trace and runtime figure.
 if (sampler_started) { writeLines("stop", stop_file); Sys.sleep(sampler_interval + 2) }
 read_trace <- function(p) if (!is.null(p) && file.exists(p)) read_csv(p, show_col_types = FALSE, progress = FALSE, col_types = cols(time_utc = col_character(), stage = col_character(), .default = col_double())) else NULL
 resource_trace <- read_trace(trace_csv)
@@ -1103,15 +983,12 @@ if (!is.null(trace_for_fig)) {
 } else save_fig("fig10_runtime_memory_stm_K040.png", fig10a, 9, 4)
 
 # ---- Validation ----
-# INPUT : every object above.
-# DOES  : checks that must hold before the tables are written; the script stops after
-#         writing validation_checks.csv if any fails.
-# OUTPUT: validation_checks.
+# Checks that must hold before tables are written; the script stops after validation_checks.csv if any fails.
 begin_stage("validation")
 checks <- list()
 add_check <- function(check, detail, pass) checks[[length(checks) + 1L]] <<- tibble(check = check, detail = detail, pass = isTRUE(pass))
-add_check("source files read: 7 comment files and 1 submission file, rows equal the delivered counts", sprintf("%d + %d rows", n_comments_all, n_submissions_all), n_comments_all == 891397 && n_submissions_all == 10747)
-add_check("every delivered artifact read matches the SHA256 in its manifest", sprintf("%d of %d existing files", sum(input_integrity$hash_equals_manifest), sum(input_integrity$exists)), all(input_integrity$hash_equals_manifest[input_integrity$exists]))
+add_check("source files read: 7 comment files and 1 submission file, rows equal the earlier counts", sprintf("%d + %d rows", n_comments_all, n_submissions_all), n_comments_all == 891397 && n_submissions_all == 10747)
+add_check("every earlier output read matches the SHA256 in its manifest", sprintf("%d of %d existing files", sum(input_integrity$hash_equals_manifest), sum(input_integrity$exists)), all(input_integrity$hash_equals_manifest[input_integrity$exists]))
 add_check("Tier 2 representation reproduced: every reconciliation item equal", sprintf("%d of %d equal", sum(tier2_reconciliation$equal), nrow(tier2_reconciliation)), all(tier2_reconciliation$equal))
 add_check("STM documents: every entering document survives the conversion and every token is kept",
           sprintf("%d in, %d out; tokens %d in, %d out", n_stm_in, length(documents), tokens_stm_in, sum(doc_tokens_stm)), length(documents) == n_stm_in && sum(doc_tokens_stm) == tokens_stm_in)
@@ -1160,10 +1037,7 @@ mark_stage("validation")
 log_line("validation:", sum(validation_checks$pass), "of", nrow(validation_checks), "checks pass")
 
 # ---- Write tables ----
-# INPUT : the measurement objects above.
-# DOES  : write one CSV per table and record its dimensions for the sidecars; stop
-#         before writing anything else if a validation check failed.
-# OUTPUT: CSV files under tables/.
+# One CSV per table; stops first if a blocking validation check failed.
 begin_stage("tables")
 table_dims <- list()
 write_table <- function(tbl, name) {
@@ -1184,7 +1058,7 @@ parameters_table <- tibble(
             paste(sprintf("%.4f", spline_knots), collapse = "; "), paste(sprintf("%.6f", spline_boundary), collapse = "; "), as.integer(day0), init_type, stm_seed, max_em_its, format(emtol, scientific = TRUE),
             gamma_prior, sigma_prior, 1L, effect_nsims, effect_plot_nsims, effect_npoints, effect_seed, coherence_M, exclusivity_frexw, label_n_words, frex_weight, correlation_cutoff, n_representative,
             representative_min_tokens, active_topic_threshold, paste(band_labels, collapse = "; "), sample_stride,
-            "delivered Tier 2 LDA representation: lower case; U+2019 -> '; URLs removed; Unicode letter-run tokens with internal apostrophes; trailing 's stripped; tokens < 2 chars removed; 310 Tier 2 entries removed; marker-only documents excluded; terms kept when 5 <= df <= 50% of non-marker documents; no stemming",
+            "Tier 2 LDA representation: lower case; U+2019 -> '; URLs removed; Unicode letter-run tokens with internal apostrophes; trailing 's stripped; tokens < 2 chars removed; 310 Tier 2 entries removed; marker-only documents excluded; terms kept when 5 <= df <= 50% of non-marker documents; no stemming",
             stopword_source, workbook_hash, min_token_chars, min_document_frequency, max_document_share, heldout_share, split_seed, "all Tier 2 modelable documents (no split)", quick_run, if (quick_run) quick_n else NA,
             memory_sampler_on, sampler_interval, fit_from_cache, fit_record$run_id))
 write_table(parameters_table,            "parameters.csv")
@@ -1273,11 +1147,7 @@ preservation_status <- tibble(
 write_table(preservation_status, "preservation_status.csv")
 
 # ---- Provenance sidecars ----
-# INPUT : the CSV, PNG and RDS outputs; the source files; the workbook; the delivered artifacts read.
-# DOES  : write one <output>.manifest.yml per output (input hashes, output hash and
-#         dimensions, script hash, git commit, parameters, seed, package versions; lite
-#         manifests for the RDS objects).
-# OUTPUT: *.manifest.yml next to each output.
+# One <output>.manifest.yml per output with input, output and script hashes, parameters and package versions.
 begin_stage("manifests")
 git_commit <- tryCatch(system2("git", c("-C", project_dir, "rev-parse", "--short", "HEAD"), stdout = TRUE, stderr = FALSE), error = function(e) "")
 if (length(git_commit) == 0L) git_commit <- ""
@@ -1287,9 +1157,9 @@ input_files <- c(
   lapply(seq_len(nrow(source_files)), function(i) list(path = source_files$path[i], hash = source_files$sha256[i], format = "parquet", rows = as.integer(source_files$rows[i]), role = "source data, read-only")),
   list(list(path = stopword_workbook, hash = workbook_hash, format = "xlsx", rows = nrow(tier2_raw), cols = ncol(tier2_raw), sheet = stopword_sheet, role = "Tier 2 stopword list, read-only")),
   lapply(which(input_integrity$exists), function(i) list(path = input_integrity$path[i], hash = input_integrity$sha256_now[i], format = if (grepl("\\.rds$", input_integrity$path[i])) "rds" else "csv",
-                                                         role = "delivered artifact, read-only (reconciliation)")))
+                                                         role = "earlier output, read-only (reconciliation)")))
 manifest_parameters <- c(list(model = "Structural Topic Model, stm::stm variational EM, spectral initialisation, prevalence ~ doc_type + s(day_of_july, df = 10), no content covariate",
-                              text_representation = "the delivered Tier 2 LDA representation reproduced with the delivered code (see parameters.csv)",
+                              text_representation = "the Tier 2 LDA representation reproduced with the original code (see parameters.csv)",
                               documents = "all Tier 2 modelable documents (857,385 in the full run), doc_key = Reddit fullname, source order",
                               topic_numbering = "the stm model's own topic index (no renumbering); prevalence_rank is a separate column",
                               retained = "models/stm_K040_pilot.rds (STM object), stm_input_K040_pilot.rds (documents, vocab, covariates), estimate_effect_K040.rds, fit_record_K040.rds"),
@@ -1318,8 +1188,8 @@ write_sidecar <- function(output) {
   manifest$software <- list(language = "R", language_version = paste(R.version$major, R.version$minor, sep = "."), packages = package_versions, os = paste(Sys.info()[["sysname"]], Sys.info()[["release"]]))
   manifest$seed      <- stm_seed
   manifest$timestamp <- format(Sys.time(), "%Y-%m-%dT%H:%M:%SZ", tz = "UTC")
-  manifest$notes     <- if (ext == "rds") "Retained object of the K = 40 STM pilot (July 2026 r/politics, Tier 2 text representation): the STM model object (rows x cols = theta documents x topics), its stm-format input (documents x vocabulary), the estimateEffect object (topics x posterior draws), the fit record (console log lines x fields) or the diagnostics cache (topics x measures). Source Parquet and delivered artifacts read-only." else
-    "K = 40 pilot Structural Topic Model of the July 2026 r/politics sample on the delivered Tier 2 LDA text representation; prevalence varies with document type and a B-spline of the fractional day of July; no content covariate; spectral initialisation; the fit is deterministic on this machine; effect simulations seeded (effect_seed). Source Parquet and delivered artifacts read-only."
+  manifest$notes     <- if (ext == "rds") "Retained object of the K = 40 STM pilot (July 2026 r/politics, Tier 2 text representation): the STM model object (rows x cols = theta documents x topics), its stm-format input (documents x vocabulary), the estimateEffect object (topics x posterior draws), the fit record (console log lines x fields) or the diagnostics cache (topics x measures). Source Parquet and earlier outputs read-only." else
+    "K = 40 pilot Structural Topic Model of the July 2026 r/politics sample on the Tier 2 LDA text representation; prevalence varies with document type and a B-spline of the fractional day of July; no content covariate; spectral initialisation; the fit is deterministic on this machine; effect simulations seeded (effect_seed). Source Parquet and earlier outputs read-only."
   write_yaml(manifest, paste0(output, ".manifest.yml"))
 }
 invisible(lapply(list.files(tab_dir,   pattern = "\\.csv$", full.names = TRUE), write_sidecar))

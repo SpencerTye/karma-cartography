@@ -1,16 +1,9 @@
-# July 2026 r/politics sample — time to first direct reply
-#
-# Standalone side analysis. Reads the raw Parquet comment files, verifies the
-# parent/child reference convention from the data, reconstructs direct
-# comment-to-comment replies, and measures the elapsed time from each
-# replied-to comment to its earliest observed direct reply. Source Parquet is
-# read-only. All outputs are written under r_analysis_outputs/first_direct_reply/
-# and are reproducible by re-running this script top to bottom.
+# Time from each r/politics comment (July 2026 sample) to its first direct reply.
+# Input: comment Parquet files under data_sample/comments/2026-07.
+# Checks the parent_id convention, rebuilds comment-to-comment replies, and
+# writes tables, one figure and manifest sidecars to r_analysis_outputs/first_direct_reply/.
 
 # ---- Setup: packages, paths, output directories ----
-# INPUT : none.
-# DOES  : load packages; define source paths; create output folders.
-# OUTPUT: path variables; figures/ and tables/ directories.
 library(nanoparquet)
 library(dplyr)
 library(ggplot2)
@@ -32,11 +25,7 @@ dir.create(tab_dir, recursive = TRUE, showWarnings = FALSE)
 comment_files <- list.files(comments_dir, pattern = "\\.parquet$", full.names = TRUE)
 
 # ---- Read source data ----
-# INPUT : 7 comment Parquet files (read-only).
-# DOES  : read each file and stack; keep id, parent_id, link_id, created_utc
-#         (column selection only; no rows dropped); cast created_utc to double;
-#         derive the UTC calendar date of creation.
-# OUTPUT: comments (one row per comment); n_comments.
+# 7 comment files; keep id, parent_id, link_id, created_utc and add the UTC date.
 comments <- lapply(comment_files, read_parquet) |>
   bind_rows() |>
   select(id, parent_id, link_id, created_utc) |>
@@ -46,14 +35,9 @@ comments <- lapply(comment_files, read_parquet) |>
 n_comments <- nrow(comments)
 
 # ---- Verify the parent/child reference convention ----
-# INPUT : comments.
-# DOES  : check that id is unique, non-missing, and carries no type prefix;
-#         classify every parent_id by what it resolves to: a 't3_' value equal
-#         to the comment's own link_id (reply to the submission); a 't1_' value
-#         whose remainder matches a comment id in the sample; a 't1_' value
-#         with no matching comment in the sample; a 't3_' value that differs
-#         from link_id; or a value not matching the 't1_'/'t3_' + base36 form.
-# OUTPUT: comments with parent_key and parent_kind; parent_reference_check.
+# ids should be unique bare base36. Each parent_id is classed as the comment's own
+# submission ('t3_' = link_id), another submission, a comment in or not in the
+# sample ('t1_'), or malformed.
 n_id_distinct   <- n_distinct(comments$id)
 n_id_missing    <- sum(is.na(comments$id))
 n_id_unprefixed <- sum(grepl("^[0-9a-z]+$", comments$id))
@@ -83,11 +67,7 @@ n_parent_not_in_sample_day1 <- sum(comments$parent_kind == "comment_not_in_sampl
                                      comments$created_date == as.Date("2026-07-01"))
 
 # ---- Reconstruct direct comment replies ----
-# INPUT : comments.
-# DOES  : keep comments whose parent is a comment present in the sample
-#         (parent_kind == "comment_in_sample"); join each to its parent by id
-#         to attach the parent's created_utc and link_id.
-# OUTPUT: replies (one row per direct reply whose parent is in the sample).
+# Replies whose parent comment is in the sample, joined to the parent's time and link_id.
 replies <- comments |>
   filter(parent_kind == "comment_in_sample") |>
   select(reply_id = id, reply_link_id = link_id,
@@ -103,11 +83,8 @@ n_replies_same_thread <- sum(replies$reply_link_id == replies$parent_link_id)
 n_replies_self        <- sum(replies$reply_id == replies$parent_key)
 
 # ---- First direct reply per replied-to comment ----
-# INPUT : replies.
-# DOES  : sort replies by created time within each parent (ties broken by
-#         reply id); keep the earliest per parent; count direct replies per
-#         parent and how many share the earliest second.
-# OUTPUT: first_reply (one row per replied-to comment).
+# Earliest reply per parent (ties broken by reply id); also count replies and
+# how many share the earliest second.
 first_reply <- replies |>
   arrange(parent_key, reply_created_utc, reply_id) |>
   group_by(parent_key) |>
@@ -121,11 +98,7 @@ first_reply <- replies |>
   )
 
 # ---- Elapsed time to first direct reply ----
-# INPUT : first_reply.
-# DOES  : elapsed_sec = first reply created_utc minus parent created_utc.
-#         No row is removed on the basis of its elapsed value; negative,
-#         zero-second, and tied cases are counted and kept.
-# OUTPUT: first_reply with elapsed_sec; population and anomaly counts.
+# Negative, zero-second and tied cases are counted and kept.
 first_reply <- first_reply |>
   mutate(elapsed_sec = first_reply_created_utc - parent_created_utc)
 
@@ -136,11 +109,8 @@ n_zero_second   <- sum(first_reply$elapsed_sec == 0)
 n_tied_earliest <- sum(first_reply$n_tied_earliest > 1)
 
 # ---- Summary statistics ----
-# INPUT : first_reply (elapsed_sec); population counts.
-# DOES  : quantiles (type 7), mean, extremes, anomaly counts; counts and
-#         proportions of first replies in fixed elapsed-time bands and within
-#         each band's upper bound (cumulative).
-# OUTPUT: reply_summary (long table); reply_bands.
+# Quantiles (type 7), mean, extremes and anomaly counts; counts per elapsed-time
+# band with cumulative totals.
 elapsed <- first_reply$elapsed_sec
 q <- function(p) quantile(elapsed, p, type = 7, names = FALSE)
 
@@ -185,10 +155,6 @@ reply_bands <- first_reply |>
   select(band, upper_bound_sec, n_in_band, prop_in_band, n_within_upper, prop_within_upper)
 
 # ---- Observed-reply share by comment creation date ----
-# INPUT : comments (created_date); first_reply (parent_key).
-# DOES  : for each UTC calendar day of comment creation, count comments and
-#         how many have a direct reply observed in the sample.
-# OUTPUT: reply_by_parent_date.
 reply_by_parent_date <- comments |>
   mutate(has_observed_reply = id %in% first_reply$parent_key) |>
   group_by(created_date) |>
@@ -198,13 +164,8 @@ reply_by_parent_date <- comments |>
   mutate(prop_with_observed_direct_reply = with_observed_direct_reply / comments)
 
 # ---- Figure bins ----
-# INPUT : first_reply (elapsed_sec).
-# DOES  : bin elapsed seconds with integer-aligned edges: one second wide up to
-#         10 s, then growing by about 12% per bin (edges from
-#         unique(round(10^seq(0, 6.5, by = 0.05))), offset by -0.5 so every
-#         integer second falls inside exactly one bin); count per bin. Also
-#         count first replies at each exact second from 0 to 60 s.
-# OUTPUT: hist_bins (one row per bin, empty bins included); zoom_bins.
+# One-second bins up to 10 s, then about 12% wider per bin. Edges are offset by
+# -0.5 so each integer second falls in exactly one bin. zoom_bins covers 0-60 s.
 bin_edges_sec <- c(-0.5, unique(round(10^seq(0, 6.5, by = 0.05))) - 0.5)
 hist_bins <- first_reply |>
   mutate(bin = cut(elapsed_sec, breaks = bin_edges_sec, right = FALSE)) |>
@@ -221,12 +182,8 @@ zoom_bins <- first_reply |>
 n_within_60 <- sum(zoom_bins$n)
 
 # ---- Figure ----
-# INPUT : hist_bins; zoom_bins; summary values.
-# DOES  : main panel = count per bin on x = log10(seconds + 1) with tick labels
-#         in human units; inset = the 0-60 s region at one bar per second,
-#         rendered to a grob on a null device (so no stray Rplots.pdf is
-#         written); save as PNG.
-# OUTPUT: figures/fig_time_to_first_direct_reply.png.
+# Main panel on log10(seconds + 1) with an inset of 0-60 s at one bar per second.
+# pdf(NULL) stops ggplotGrob from writing a stray Rplots.pdf.
 ink_series <- "#2a78d6"
 ink_text   <- "#0b0b0b"
 ink_sub    <- "#52514e"
@@ -281,10 +238,7 @@ ggsave(file.path(fig_dir, "fig_time_to_first_direct_reply.png"), fig_main,
 invisible(dev.off())
 
 # ---- Validation checks ----
-# INPUT : the objects above.
-# DOES  : recompute key quantities by a second route and compare; reconcile
-#         totals; stop if any check fails.
-# OUTPUT: validation_checks (one row per check).
+# Recompute key quantities a second way and reconcile totals; stop on any failure.
 earliest_by_parent <- replies |>
   group_by(parent_key) |>
   summarise(min_created = min(reply_created_utc), .groups = "drop")
@@ -347,9 +301,6 @@ print(as.data.frame(validation_checks[, c("check", "pass")]), right = FALSE)
 stopifnot(all(validation_checks$pass))
 
 # ---- Write supporting tables ----
-# INPUT : the measurement objects above.
-# DOES  : write one CSV per table.
-# OUTPUT: CSV files under tables/.
 write_csv(reply_summary,          file.path(tab_dir, "first_direct_reply_summary.csv"))
 write_csv(reply_bands,            file.path(tab_dir, "first_direct_reply_bands.csv"))
 write_csv(parent_reference_check, file.path(tab_dir, "parent_reference_check.csv"))
@@ -358,10 +309,8 @@ write_csv(hist_bins,              file.path(tab_dir, "first_direct_reply_histogr
 write_csv(validation_checks,      file.path(tab_dir, "validation_checks.csv"))
 
 # ---- Write provenance sidecars ----
-# INPUT : the CSV and PNG outputs; the 7 source Parquet files.
-# DOES  : write one <output>.manifest.yml per output recording input/output
-#         SHA256 hashes, this script's hash, git commit, and package versions.
-# OUTPUT: *.manifest.yml sidecars next to each output.
+# One <output>.manifest.yml per output: input/output SHA256, script hash,
+# git commit and package versions.
 sha256 <- function(path) paste0("sha256:", digest(path, algo = "sha256", file = TRUE))
 
 git_commit <- tryCatch(
@@ -412,9 +361,6 @@ invisible(lapply(list.files(tab_dir, pattern = "\\.csv$", full.names = TRUE), wr
 invisible(lapply(list.files(fig_dir, pattern = "\\.png$", full.names = TRUE), write_sidecar))
 
 # ---- Console summary ----
-# INPUT : reply_summary; reply_bands; parent_reference_check.
-# DOES  : print the headline tables.
-# OUTPUT: console text.
 print(as.data.frame(parent_reference_check))
 print(as.data.frame(reply_summary))
 print(as.data.frame(reply_bands))

@@ -1,46 +1,11 @@
 #!/usr/bin/env python3
-"""Full-corpus GPU UMAP + HDBSCAN baseline (Phase 3, blind semantic structure
-discovery).
+"""GPU UMAP + HDBSCAN baseline on the full 902,144-document 0.6B embedding matrix (Phase 3).
 
-Scales the proven three-day feasibility implementation
-(../three_day_gpu_umap_hdbscan_feasibility) to the COMPLETE 902,144-document 0.6B
-embedding matrix. The analytical workflow, cuML calls, and diagnostic options are
-identical to the three-day run -- this script only points at the full corpus, adds
-a separate 2-D UMAP for visualisation, and adds full-corpus verification/figures.
-Nothing is tuned, swept, sampled, deduplicated, or interpreted.
-
-Operations (in order):
-  1. GPU UMAP (cuml.manifold.UMAP)   : n_neighbors=15, n_components=5, min_dist=0.0,
-     metric=cosine   -> 5-D analytical coordinates.
-  2. GPU HDBSCAN (cuml.cluster.HDBSCAN): min_cluster_size=10, min_samples=10,
-     metric=euclidean, cluster_selection_method=eom   -> clustering of the 5-D output.
-  3. GPU UMAP (cuml.manifold.UMAP)   : n_neighbors=15, n_components=2, min_dist=0.0,
-     metric=cosine   -> 2-D VISUALISATION coordinates ONLY (never fed to HDBSCAN,
-     never used to change cluster assignments).
-
-Each operation is measured for wall-clock runtime, peak WHOLE-CARD GPU memory (NVML,
-all processes on the device), and peak host RAM. Every HDBSCAN diagnostic cuML
-exposes is preserved verbatim (labels incl. -1, membership probabilities, cluster
-persistence, condensed / single-linkage / minimum-spanning trees). Directly observed
-effects of repeated / tied embeddings are recorded (no interpretation). Outputs are
-keyed to doc_key with exact row alignment, carry provenance manifests, and are
-verified against the task's completion checklist.
-
-GPU memory ceiling: whole-card usage must stay <= --ceiling-mib (default 21504 MiB
-= 21 GiB). We MEASURE; we do not probe/maximise and do not change any analytical
-setting to reduce memory. If a fit raises (e.g. CUDA OOM) OR its measured whole-card
-peak exceeds the ceiling, we STOP SAFELY: save whatever evidence exists for the
-completed part, write a FAILED/BREACHED summary + verification, and do not start the
-next GPU stage -- rather than substituting another method or dataset.
-
-Reproducibility note (unchanged from the three-day run): cuML UMAP is run with the
-fixed config's default random_state=None. Per the cuML docs, a random_state "enables
-reproducible embeddings, but at the cost of slower training and increased memory
-usage", and for N>50k build_algo='auto' selects NN-Descent whose KNN graph is itself
-non-deterministic. Because this measures runtime and peak memory, seeding would
-distort the measured quantities, so the run is left unseeded and the UMAP outputs
-(and the HDBSCAN labels derived from them) are run-specific. HDBSCAN is deterministic
-given its input, subject to tie-breaking among equal distances.
+Same settings as the three-day run: UMAP to 5-D (n_neighbors=15, min_dist=0.0, cosine), HDBSCAN on
+that (min_cluster_size=10, min_samples=10, eom), plus a separate 2-D UMAP used only for figures.
+Outputs: coordinates, labels, HDBSCAN diagnostics and trees keyed to doc_key, runtime and peak
+GPU/host memory per step, manifests and verification. Stops cleanly if a step fails or exceeds
+--ceiling-mib (default 21504). UMAP is unseeded, so outputs are run-specific.
 """
 
 from __future__ import annotations
@@ -60,7 +25,7 @@ from datetime import datetime, timezone
 import numpy as np
 
 # ----------------------------------------------------------------------------
-# Fixed task configuration (do NOT change these values)
+# Fixed analysis settings (do not change)
 # ----------------------------------------------------------------------------
 UMAP_DEFAULTS = dict(n_neighbors=15, n_components=5, min_dist=0.0, metric="cosine")
 VIZ_UMAP_DEFAULTS = dict(n_neighbors=15, n_components=2, min_dist=0.0, metric="cosine")
@@ -369,7 +334,7 @@ def duplicate_stats(arr: np.ndarray) -> dict:
 
 
 # ----------------------------------------------------------------------------
-# Verification against the task completion checklist
+# Verification checklist
 # ----------------------------------------------------------------------------
 def build_verification(
     *,
@@ -692,7 +657,7 @@ def main():
     ap.add_argument(
         "--figures-only", action="store_true", help="rebuild figures from saved results"
     )
-    # Fixed analytical settings (defaults ARE the task spec; not tuned).
+    # Fixed analysis settings (not tuned).
     ap.add_argument(
         "--umap-n-neighbors", type=int, default=UMAP_DEFAULTS["n_neighbors"]
     )

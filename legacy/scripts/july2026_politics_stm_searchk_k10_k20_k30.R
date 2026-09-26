@@ -1,51 +1,13 @@
-# July 2026 r/politics sample - STM K-selection evidence for K = 10, 20 and 30 (searchK methodology)
-#
-# Purpose: produce the stm package's own K-selection evidence (the searchK() workflow: one common
-# held-out construction by document completion, one fit per K, held-out likelihood, residual
-# dispersion, variational bound, corrected lower bound, EM iterations) for exactly K = 10, 20 and 30
-# on the July 2026 r/politics development corpus, using exactly the delivered Tier 2 LDA text
-# representation (the same documents, tokeniser, 310-word Tier 2 stopword list, vocabulary rule and
-# modelable-document rule, reproduced with the delivered code and reconciled against the delivered
-# artifacts), with the prevalence and content specification of the assignment:
-#   prevalence ~ author + s(created_utc) + doc_type + thread_id + parent_id + s(score) +
-#                s(num_comments) + s(upvote_ratio) + num_comments_missing + upvote_ratio_missing,
-#   L1 (glmnet) prevalence regularisation, content ~ doc_type, spectral initialisation, the same
-#   documents, vocabulary, covariates, initialisation and convergence settings for every K.
-# searchK() itself discards the fitted models, so its per-K body (stm:::get_statistics) is reproduced
-# here step by step with the package's own functions (make.heldout, stm, eval.heldout, checkResiduals,
-# bound, lbound = bound + lfactorial(K), em.its) and proven equal to a literal searchK() call on a
-# small subset inside every run. Semantic coherence is computed separately with stm's
-# content-covariate-aware semanticCoherence(); stm's exclusivity() is not defined for content
-# covariate models and is recorded as unavailable, not substituted. No K is chosen and no topic is
-# named or interpreted; topics are identified by the model's own index only. The source Parquet
-# files and every delivered artifact are read only.
-#
-# What the script does, in order (main mode):
-#   1. rebuilds the Tier 2 representation with the delivered code and reconciles it against the
-#      delivered Tier 2 artifacts and the metadata inventory (discrepancies are reported, never
-#      repaired);
-#   2. converts the modelable documents to the stm format, builds the covariate table from the
-#      source records (submission fields inherited through the established link_id join, explicit
-#      missingness indicators and technical placeholders where the submission is absent from the
-#      sample), and builds the common held-out object with stm::make.heldout under a recorded seed;
-#   3. proves the searchK reimplementation against a literal searchK() call on a small subset;
-#   4. launches one worker R process per K (this script in worker mode) that fits the model, saves
-#      it at once, and computes and saves the held-out likelihood, residual dispersion, semantic
-#      coherence and labels, each the moment it exists, with a background memory sampler; waits;
-#   5. assembles the K comparison tables and figures, the per-document join tables, validation
-#      checks, run records and provenance sidecars.
-# Environment switches: STM_QUICK=<folder> runs a reduced smoke test into that folder
-# (STM_QUICK_N documents, STM_QUICK_ITS EM iterations); STM_MAX_EM_ITS overrides the EM ceiling;
-# STM_SEARCHK_CONCURRENCY sets how many K fits run at once; STM_MEMORY_SAMPLER=0 disables the
-# samplers; STM_REFIT=1 ignores the model cache. STM_SEARCHK_WORKER_K is set by the main process
-# only. All outputs go under r_analysis_outputs/stm_searchk_k10_k20_k30/ (this script owns that folder
-# and clears its tables/ and figures/ at the start of each main run; models/ is a keyed cache).
+# STM K-selection evidence (searchK method) for K = 10, 20 and 30 on the July 2026 r/politics sample.
+# Rebuilds the Tier 2 LDA text representation and checks it against the saved Tier 2 outputs, builds the
+# covariates and one common held-out set, and fits each K in its own worker process (prevalence on author,
+# time, doc_type, thread, parent, score, comment count and upvote ratio with L1; content ~ doc_type).
+# searchK's per-K steps are reimplemented so the models are kept, and checked against a real searchK() call.
+# Input: data_sample/ Parquet files and the Tier 2 outputs. Output: r_analysis_outputs/stm_searchk_k10_k20_k30/.
+# Env: STM_QUICK=<folder> (smoke test; STM_QUICK_N, STM_QUICK_ITS), STM_MAX_EM_ITS, STM_SEARCHK_CONCURRENCY,
+#      STM_MEMORY_SAMPLER=0, STM_REFIT=1; STM_SEARCHK_WORKER_K is set internally.
 
 # ---- Setup: packages, paths, parameters, output directories ----
-# INPUT : none.
-# DOES  : load packages; define paths, the delivered Tier 2 parameters (unchanged), the searchK
-#         settings, the STM specification and the implementation settings; create folders.
-# OUTPUT: parameter objects; figures/, tables/ and models/ directories.
 suppressPackageStartupMessages({
   library(nanoparquet); library(dplyr); library(tidyr); library(stringi); library(Matrix); library(readxl)
   library(stm); library(ps); library(processx); library(ggplot2); library(scales); library(readr); library(digest); library(yaml); library(patchwork); library(clue)
@@ -76,7 +38,7 @@ comments_dir      <- file.path(project_dir, "data_sample/comments/2026-07")
 submissions_dir   <- file.path(project_dir, "data_sample/submissions/2026-07")
 script_path       <- file.path(project_dir, "july2026_politics_stm_searchk_k10_k20_k30.R")
 rscript_path      <- file.path(R.home("bin"), "Rscript.exe")
-tier2_dir         <- file.path(project_dir, "r_analysis_outputs/lda_topics_tier2")            # delivered run (read-only)
+tier2_dir         <- file.path(project_dir, "r_analysis_outputs/lda_topics_tier2")            # original Tier 2 run (read-only)
 k40_dir           <- file.path(project_dir, "r_analysis_outputs/lda_topics_tier2_k40_k80")    # K = 40 companion package (read-only)
 inventory_dir     <- file.path(project_dir, "r_analysis_outputs/metadata_inventory")          # metadata inventory (read-only)
 pilot_dir         <- file.path(project_dir, "r_analysis_outputs/stm_pilot_k40")               # K = 40 STM pilot (read-only)
@@ -95,7 +57,7 @@ dir.create(model_dir, recursive = TRUE, showWarnings = FALSE)
 # Tables and figures are regenerated on every main run; models/ is a keyed cache of the held-out object, the fits and their diagnostics.
 if (!worker_mode) invisible(file.remove(list.files(c(fig_dir, tab_dir), pattern = "\\.(csv|png|yml)$", full.names = TRUE)))
 
-# Delivered Tier 2 parameters (unchanged; they reproduce the documents, vocabulary and split).
+# Tier 2 parameters (unchanged; they reproduce the documents, vocabulary and split).
 heldout_share          <- 0.05
 split_seed             <- 20260731L
 min_token_chars        <- 2L
@@ -175,23 +137,9 @@ worker_status_path <- function(K) file.path(model_dir, sprintf("worker_%s_status
 worker_file <- function(K, what, ext = "rds") file.path(model_dir, sprintf("%s_%s.%s", what, k_tag(K), ext))
 
 # ---- Covariate builder (tested by tests/test_stm_searchk_covariates.R) ----
-# INPUT : docs_stm (one row per STM document in stm order: doc_key, doc_type, author, created_utc,
-#         link_id, parent_id, score, num_comments, upvote_ratio - the record's own stored values, NA
-#         for comments); submissions (the source submission records: id, num_comments, upvote_ratio).
-# DOES  : thread identity = the established link_id for comments, the submission's own fullname
-#         ('t3_' + id, the same string as its comments' link_id) for submissions; parent identity =
-#         the stored parent_id for comments (absent parents keep their own level), the explicit level
-#         NO_PARENT_SUBMISSION for submissions; num_comments and upvote_ratio = the submission's own
-#         stored values, inherited by its comments through the established join comment.link_id =
-#         't3_' + submission.id against all source submissions; where the linked submission is absent
-#         from the sample the value is not observed: a missingness indicator is 1 and a technical
-#         placeholder (the median of the observed values over the modelled documents, a constant
-#         whose whole effect the indicator column absorbs) completes the design matrix. Nothing is
-#         removed; no substantive value is invented.
-# OUTPUT: list(meta = the covariate data.frame passed to stm (factors: author, doc_type with comment
-#         as reference, thread_id, parent_id; numerics: created_utc, score, num_comments,
-#         upvote_ratio; indicators: num_comments_missing, upvote_ratio_missing), doc_key,
-#         placeholders, missingness (reason counts), observed vectors).
+# Thread = link_id for comments and 't3_' + id for submissions; parent = parent_id for comments and
+# NO_PARENT_SUBMISSION for submissions. num_comments and upvote_ratio come from the linked submission; when it
+# is absent from the sample, a missingness indicator is set and the median of observed values fills the gap.
 build_stm_covariates <- function(docs_stm, submissions) {
   sub_by_link <- tibble(link_id = paste0("t3_", submissions$id), submission_num_comments = as.numeric(submissions$num_comments),
                         submission_upvote_ratio = as.numeric(submissions$upvote_ratio))
@@ -229,10 +177,7 @@ build_stm_covariates <- function(docs_stm, submissions) {
 }
 
 # ---- Fit-log parser ----
-# INPUT : the console lines of one stm() fit (verbose = TRUE).
-# DOES  : read the E-step and M-step seconds of every iteration and the per-word bound lines.
-# OUTPUT: tibble(iteration, estep_seconds, mstep_seconds_reported, per_word_bound_reported,
-#         relative_change_reported); the convergence message.
+# Reads per-iteration E-step and M-step seconds and bound lines from the verbose stm() console output.
 parse_fit_log <- function(lines) {
   estep <- as.numeric(sub("^Completed E-Step \\((\\d+) seconds\\).*$", "\\1", grep("^Completed E-Step", lines, value = TRUE)))
   mlines <- grep("^Completed M-Step", lines, value = TRUE)
@@ -274,20 +219,11 @@ start_sampler <- function(trace_csv, stage_file, stop_file, log_file) {
 stop_sampler <- function(started, stop_file) { if (started) { writeLines("stop", stop_file); Sys.sleep(sampler_interval + 2) } }
 
 # ---- The L1 prevalence step: stm's opt.mu with a per-call record and an optional memory cap ----
-# stm:::opt.mu (mode "L1") calls glmnet::glmnet(x = covar[, -1], y = lambda, family = "mgaussian",
-# alpha = enet) with glmnet's defaults and selects the path point minimising dev + ic.k * df
-# (stm:::unpack.glmnet). glmnet allocates the whole 100-point coefficient path as a dense
-# nx x (K - 1) x 100 array with nx = number of design columns (446,630 here) and copies it several
-# times: measured on 2026-09-09, one call at K = 10 took 377 s and raised the process working set to
-# 18.7 GB; at K = 30 the same allocation is 3.2 times larger, beyond this machine's free memory.
-# With gamma_pmax > 0 the identical call is made with glmnet's `pmax` argument (the path stops once
-# more than pmax design columns have nonzero coefficients), which caps nx at pmax. Every path point
-# before the stop is computed identically (same lambda sequence, same warm starts), so the selected
-# solution is unchanged whenever the information-criterion minimum lies before the stop; every call
-# records the path length, the chosen index and whether it was the last computed point
-# (chosen_is_last_computed = TRUE would mean the cap could have altered the selection). The
-# replacement function reproduces stm's opt.mu line for line; only the `pmax` argument and the
-# record are added. STM_GAMMA_PMAX=0 restores the untouched package call.
+# stm:::opt.mu (L1) calls glmnet with family = "mgaussian", which stores the whole coefficient path as a dense
+# array over 446,630 design columns. At K = 10 one call took 377 s and 18.7 GB (measured 2026-09-09), and K = 30
+# would exceed free memory. With gamma_pmax > 0 the same call passes glmnet's pmax, which stops the path early;
+# the selection is unchanged unless the chosen point is the last one computed, which every call records.
+# STM_GAMMA_PMAX=0 restores the package call.
 stm_opt_mu_original <- stm:::opt.mu
 gamma_call_counter <- 0L
 gamma_log_csv <- NA_character_
@@ -312,17 +248,8 @@ opt_mu_recorded <- function(lambda, mode = c("CTM", "Pooled", "L1"), covar = NUL
 }
 
 # ---- Worker mode: fit one K and compute its searchK statistics ----
-# INPUT : STM_SEARCHK_WORKER_K, STM_SEARCHK_RUN_KEY; models/common_input.rds (held-out documents,
-#         vocabulary, missing tokens, covariate table, settings).
-# DOES  : stm(heldout$documents, heldout$vocab, K, prevalence, content, data, init.type = "Spectral",
-#         gamma.prior = "L1", kappa.prior = "L1", ...) in this process with the console written to
-#         models/fit_console_K.log, the model saved the moment the fit ends; then, in the order of
-#         cost, eval.heldout, semanticCoherence (+ the exclusivity attempt), sageLabels/labelTopics,
-#         checkResiduals, each saved the moment it exists; a background memory sampler records this
-#         process throughout; the status file ends 'done' or 'error: ...'.
-# OUTPUT: models/stm_K.rds, fit_record_K.rds, heldout_eval_K.rds, semcoh_K.rds, labels_K.rds,
-#         residuals_K.rds, gamma_path_K.csv, fit_console_K.log, resource_trace_K_<run>.csv,
-#         worker_K_status.txt.
+# Fits one K from models/common_input.rds, saves the model, then computes and saves eval.heldout,
+# semanticCoherence, labels and checkResiduals in turn; worker_K_status.txt ends 'done' or 'error: ...'.
 run_stm_worker <- function(K) {
   run_key <- Sys.getenv("STM_SEARCHK_RUN_KEY")
   status_file <- worker_status_path(K)
@@ -459,10 +386,8 @@ if (worker_mode) {
 
 log_line("start (main); quick_run =", quick_run, "; K =", paste(K_values, collapse = ", "), "; max EM iterations =", max_em_its, "; concurrency =", concurrency, "; run_id", run_id)
 
-# ---- Stopword list: the Tier 2 workbook (read-only; the delivered rule) ----
-# INPUT : the curation workbook.
-# DOES  : read the 'word' column of the Tier 2 sheet exactly as stored; record its SHA256.
-# OUTPUT: stopword_list (character, 310); workbook_hash.
+# ---- Stopword list: the Tier 2 workbook (read-only) ----
+# Reads the 'word' column of the 310-word sheet as stored and records its SHA256.
 workbook_hash <- sha256(stopword_workbook)
 tier2_raw     <- read_excel(stopword_workbook, sheet = stopword_sheet, col_types = "text")
 stopword_list <- tier2_raw$word
@@ -470,12 +395,8 @@ token_regex   <- "\\p{L}+(?:'\\p{L}+)*"
 log_line("workbook read:", length(stopword_list), "entries; hash", workbook_hash)
 
 # ---- Read source data (read-only) ----
-# INPUT : 7 comment Parquet files + 1 submission Parquet file.
-# DOES  : read every file with nanoparquet and stack; keep the columns the delivered document
-#         table uses plus the metadata fields required as covariates or preserved for linkage
-#         (score, num_comments, upvote_ratio, url) and the file of origin. Column selection only;
-#         no rows dropped. INT64 columns arrive as double.
-# OUTPUT: comments; submissions; source_files (bytes, hash, rows per file).
+# Reads the 7 comment files and 1 submission file with nanoparquet, keeping the document-table columns plus
+# score, num_comments, upvote_ratio and url. No rows are dropped; INT64 columns arrive as double.
 read_type <- function(files) bind_rows(lapply(files, function(f) { x <- as_tibble(as.data.frame(read_parquet(f))); x$source_file <- basename(f); x }))
 comments_raw    <- read_type(comment_files)
 submissions_raw <- read_type(submission_files)
@@ -495,13 +416,9 @@ n_submissions_all <- nrow(submissions)
 mark_stage("read")
 log_line("read:", n_comments_all, "comments,", n_submissions_all, "submissions")
 
-# ---- Document table (the delivered rule) ----
-# INPUT : comments; submissions.
-# DOES  : one document per source record; comment text = body; submission text =
-#         title, one space, selftext; doc_key = Reddit fullname ('t1_' + id, 't3_' + id).
-#         The preserved metadata fields are attached afterwards by doc_key so that the
-#         delivered construction is copied unchanged.
-# OUTPUT: docs (source order: comments then submissions); extra (preserved fields by doc_key).
+# ---- Document table (as in the Tier 2 run) ----
+# One document per record: comment text = body, submission text = title + " " + selftext, doc_key = Reddit
+# fullname. Extra metadata is joined afterwards by doc_key so the original construction stays unchanged.
 docs <- bind_rows(
   comments |>
     transmute(doc_type = "comment", doc_id = id, doc_key = paste0("t1_", id),
@@ -525,12 +442,9 @@ extra <- bind_rows(
 stopifnot(identical(extra$doc_key, docs$doc_key))
 mark_stage("document_table")
 
-# ---- Text processing (the delivered steps 1-8; reference-only counts omitted) ----
-# INPUT : docs$text.
-# DOES  : case folding; U+2019 -> '; URLs removed; letter-run tokens with internal
-#         apostrophes; trailing 's stripped; tokens shorter than min_token_chars removed;
-#         the 310 Tier 2 entries removed; tokens of removal-marker-only documents excluded.
-# OUTPUT: tok / tdoc; per-document token counts on docs.
+# ---- Text processing (Tier 2 steps 1-8; reference-only counts omitted) ----
+# Lower case, U+2019 -> ', URLs removed, letter-run tokens, trailing 's stripped, short tokens and the 310
+# stopwords removed, marker-only documents excluded.
 removal_markers  <- c("[deleted]", "[removed]", "[ Removed by Reddit ]")
 docs$marker_only <- stri_trim_both(docs$text) %in% removal_markers
 url_regex   <- "(https?://|www\\.)\\S+"
@@ -566,11 +480,8 @@ rm(in_marker_doc)
 mark_stage("tokenize")
 log_line("tokenize:", n_letter_tokens, "letter tokens;", sum(docs$n_tokens_stop), "Tier 2 stopword tokens removed")
 
-# ---- Vocabulary and document-term matrix (the delivered rule) ----
-# INPUT : tok / tdoc.
-# DOES  : terms kept when min_document_frequency <= df <= max_document_share x
-#         non-marker documents; one dtm row per source document; model_status.
-# OUTPUT: vocabulary; dtm_all; vocabulary_table; docs$model_status; docs$n_tokens_modeled.
+# ---- Vocabulary and document-term matrix (Tier 2 rule) ----
+# Terms kept when min_document_frequency <= df <= max_document_share of non-marker documents.
 vocab_all  <- sort(unique(tok), method = "radix")
 term_index <- match(tok, vocab_all)
 tf_all <- sparseMatrix(i = tdoc, j = term_index, x = 1, dims = c(n_docs, length(vocab_all)), repr = "C")
@@ -603,12 +514,8 @@ docs <- docs |>
 mark_stage("vocabulary_dtm")
 log_line("dtm:", n_vocabulary, "terms;", sum(docs$model_status == "modeled"), "modeled documents")
 
-# ---- Tier 2 training / held-out split (the delivered rule; carried as a label only) ----
-# INPUT : docs.
-# DOES  : reproduce the seeded 5% held-out sample so every STM document carries the Tier 2
-#         'split' label for later comparison. The searchK held-out construction is a different
-#         thing (document completion inside documents); the Tier 2 split does not enter the STM.
-# OUTPUT: docs$split; n_train; n_heldout.
+# ---- Tier 2 training / held-out split (carried as a label only) ----
+# Reproduces the seeded 5% split for later comparison. It does not enter the STM; the searchK held-out set is separate.
 modeled_rows_all <- which(docs$model_status == "modeled")
 n_modeled        <- length(modeled_rows_all)
 heldout_eligible <- modeled_rows_all[docs$n_tokens_modeled[modeled_rows_all] >= 2L]
@@ -622,15 +529,9 @@ docs$split[train_rows]   <- "train"
 docs$split[heldout_rows] <- "held-out"
 mark_stage("split")
 
-# ---- Reconciliation against the delivered Tier 2 artifacts and the inventory (read-only) ----
-# INPUT : the delivered accounting tables, vocabulary table, the K = 40 document table,
-#         the cached theta_K040_seed1.rds, three inventory tables and the K = 40 STM pilot's
-#         accounting, with their manifests.
-# DOES  : hash every artifact read and compare with its manifest; compare every count of
-#         this run's representation with the delivered values (documents by status and
-#         type, tokens, vocabulary, per-term df/tf, per-document status/split/tokens,
-#         length summary, source-file hashes). Discrepancies are reported, not repaired.
-# OUTPUT: input_integrity; tier2_reconciliation; discrepancies; delivered tables.
+# ---- Reconciliation against the saved Tier 2 outputs and the inventory (read-only) ----
+# Hashes every file read against its manifest and compares this run's counts (documents, tokens, vocabulary,
+# per-term and per-document values, length summary) with the saved values. Discrepancies are only reported.
 tier2_tab <- file.path(tier2_dir, "tables"); k40_tab <- file.path(k40_dir, "tables"); inv_tab <- file.path(inventory_dir, "tables"); pilot_tab <- file.path(pilot_dir, "tables")
 artifact_paths <- c(
   document_accounting        = file.path(tier2_tab, "document_accounting.csv"),
@@ -652,10 +553,10 @@ input_integrity <- tibble(role = names(artifact_paths), path = unname(artifact_p
          hash_equals_manifest = exists & !is.na(sha256_in_manifest) & sha256_now == sha256_in_manifest,
          manifest_parses_as_strict_yaml = vapply(path, manifest_parses_strictly, logical(1)))
 read_if <- function(role, ...) if (file.exists(artifact_paths[[role]])) read_csv(artifact_paths[[role]], show_col_types = FALSE, progress = FALSE, ...) else NULL
-delivered_accounting <- read_if("document_accounting")
-delivered_report     <- read_if("text_processing_report")
-delivered_length     <- read_if("document_length_summary")
-delivered_vocabulary <- read_if("vocabulary", col_types = cols(term = col_character(), .default = col_guess()), na = character(), trim_ws = FALSE)
+saved_accounting <- read_if("document_accounting")
+saved_report     <- read_if("text_processing_report")
+saved_length     <- read_if("document_length_summary")
+saved_vocabulary <- read_if("vocabulary", col_types = cols(term = col_character(), .default = col_guess()), na = character(), trim_ws = FALSE)
 inventory_source     <- read_if("inventory_source_files")
 inventory_linkage    <- read_if("inventory_linkage_counts", col_types = cols(.default = col_character()))
 inventory_parent     <- read_if("inventory_parent_linkage")
@@ -677,7 +578,7 @@ add_recon <- function(item, tier2_value, this_value, source) {
                                           equal = !is.na(tier2_value) & !is.na(this_value) & as.character(tier2_value) == as.character(this_value),
                                           source = source)
 }
-acc_row <- function(stage) if (is.null(delivered_accounting)) rep(NA, 3) else unlist(delivered_accounting[delivered_accounting$stage == stage, c("comments", "submissions", "total")])
+acc_row <- function(stage) if (is.null(saved_accounting)) rep(NA, 3) else unlist(saved_accounting[saved_accounting$stage == stage, c("comments", "submissions", "total")])
 status_stage <- c("not modeled: removal marker only" = "not modeled: removal marker only",
                   "not modeled: no letter tokens" = "not modeled: no letter tokens",
                   "not modeled: only single-character tokens or stopwords" = "not modeled: only single-character tokens or stopwords",
@@ -694,7 +595,7 @@ for (i in 1:3) {
   add_recon(sprintf("modeled tokens (%s)", lab), acc_row("modeled tokens")[i],
             c(sum(docs$n_tokens_modeled[docs$doc_type == "comment"]), sum(docs$n_tokens_modeled[docs$doc_type == "submission"]), sum(docs$n_tokens_modeled))[i], "document_accounting.csv")
 }
-rep_item <- function(item) if (is.null(delivered_report)) NA else delivered_report$value[delivered_report$item == item]
+rep_item <- function(item) if (is.null(saved_report)) NA else saved_report$value[saved_report$item == item]
 add_recon("vocabulary size (terms modeled)", rep_item("vocabulary size (terms modeled)"), n_vocabulary, "text_processing_report.csv")
 add_recon("distinct candidate terms (vocabulary before pruning)", rep_item("distinct candidate terms in non-marker documents (vocabulary before pruning)"), n_terms_candidate, "text_processing_report.csv")
 add_recon("terms below the document-frequency floor", rep_item("step 9: terms in fewer than 5 non-marker documents removed"), sum(term_below_floor), "text_processing_report.csv")
@@ -702,12 +603,12 @@ add_recon("tokens removed with rare terms", rep_item("step 9: tokens removed wit
 add_recon("terms above the document-share ceiling", rep_item("step 9: terms in more than 50% of non-marker documents removed"), sum(term_above_ceiling), "text_processing_report.csv")
 add_recon("candidate tokens in non-marker documents", rep_item("candidate tokens in non-marker documents"), n_candidate_tokens - n_tokens_in_marker_docs, "text_processing_report.csv")
 add_recon("tokens modeled", rep_item("tokens modeled"), sum(docs$n_tokens_modeled), "text_processing_report.csv")
-if (!is.null(delivered_vocabulary)) {
-  vj <- delivered_vocabulary |> select(term, d_df = document_frequency, d_tf = term_frequency, d_kept = kept) |>
+if (!is.null(saved_vocabulary)) {
+  vj <- saved_vocabulary |> select(term, d_df = document_frequency, d_tf = term_frequency, d_kept = kept) |>
     full_join(vocabulary_table |> select(term, document_frequency, term_frequency, kept), by = "term")
-  add_recon("vocabulary.csv: rows", nrow(delivered_vocabulary), nrow(vocabulary_table), "vocabulary.csv")
-  add_recon("vocabulary.csv: terms present in both", nrow(delivered_vocabulary), sum(!is.na(vj$d_df) & !is.na(vj$document_frequency)), "vocabulary.csv")
-  add_recon("vocabulary.csv: rows with equal document_frequency, term_frequency and kept", nrow(delivered_vocabulary),
+  add_recon("vocabulary.csv: rows", nrow(saved_vocabulary), nrow(vocabulary_table), "vocabulary.csv")
+  add_recon("vocabulary.csv: terms present in both", nrow(saved_vocabulary), sum(!is.na(vj$d_df) & !is.na(vj$document_frequency)), "vocabulary.csv")
+  add_recon("vocabulary.csv: rows with equal document_frequency, term_frequency and kept", nrow(saved_vocabulary),
             sum(!is.na(vj$d_df) & !is.na(vj$document_frequency) & vj$d_df == vj$document_frequency & vj$d_tf == vj$term_frequency & vj$d_kept == vj$kept), "vocabulary.csv")
   rm(vj)
 }
@@ -728,11 +629,11 @@ if (!is.null(theta_k40_keys)) {
   add_recon("theta_K040_seed1.rds: doc_key count", n_modeled, length(theta_k40_keys), "theta_K040_seed1.rds")
   add_recon("theta_K040_seed1.rds: doc_key set equals this run's modeled documents", TRUE, setequal(theta_k40_keys, docs$doc_key[modeled_rows_all]), "theta_K040_seed1.rds")
 }
-if (!is.null(delivered_length)) {
+if (!is.null(saved_length)) {
   ql <- function(x, p) quantile(x, p, type = 7, names = FALSE)
   for (tp in c("comment", "submission")) {
     x <- docs$n_tokens_modeled[docs$model_status == "modeled" & docs$doc_type == tp]
-    d <- delivered_length[delivered_length$doc_type == tp, ]
+    d <- saved_length[saved_length$doc_type == tp, ]
     vals <- c(docs = length(x), tokens = sum(x), min = min(x), p05 = ql(x, 0.05), p25 = ql(x, 0.25), median = ql(x, 0.5), mean = mean(x), p75 = ql(x, 0.75), p95 = ql(x, 0.95), max = max(x))
     for (nm in names(vals)) add_recon(sprintf("document_length_summary.csv: %s %s", tp, nm), as.character(signif(d[[nm]], 12)), as.character(signif(vals[[nm]], 12)), "document_length_summary.csv")
   }
@@ -757,19 +658,13 @@ if (!is.null(pilot_accounting)) {
 }
 tier2_reconciliation <- bind_rows(recon)
 discrepancies <- tier2_reconciliation |> filter(!equal)
-rm(k40_table, delivered_vocabulary); invisible(gc())
+rm(k40_table, saved_vocabulary); invisible(gc())
 mark_stage("reconciliation")
 log_line("reconciliation:", sum(tier2_reconciliation$equal), "of", nrow(tier2_reconciliation), "items equal;", nrow(discrepancies), "discrepancies")
 
 # ---- STM input: documents, vocabulary, covariates ----
-# INPUT : dtm_all; docs; extra; submissions.
-# DOES  : restrict the document-term matrix to the modeled documents (all of them, in source
-#         order; a seeded subsample under STM_QUICK) and convert it with stm::asSTMCorpus to
-#         the list format. Account for every document, token and term across the conversion.
-#         Build the covariate table with build_stm_covariates() from the source records; record
-#         the spline bases stm's s() will build (df, knots), the design-matrix accounting (columns
-#         per term, sparsity) and the coverage of every covariate by document type.
-# OUTPUT: documents; vocab; meta_df; docs_stm; stm_input_accounting; covariate tables; X_design.
+# Converts the modeled documents to stm format (seeded subsample under STM_QUICK), accounts for every
+# document, token and term, builds the covariates and records the spline bases and design-matrix size.
 modeled_rows <- modeled_rows_all
 if (quick_run) { set.seed(quick_seed); modeled_rows <- sort(sample(modeled_rows_all, min(quick_n, n_modeled))) }
 dtm_stm <- dtm_all[modeled_rows, , drop = FALSE]
@@ -885,13 +780,8 @@ mark_stage("stm_input")
 log_line("stm input:", length(documents), "documents;", length(vocab), "terms;", sum(doc_tokens_stm), "tokens; design", paste(dim(X_design), collapse = " x "), "columns built in", round(seconds_design), "s")
 
 # ---- Common held-out construction (stm::make.heldout with searchK's defaults and a recorded seed) ----
-# INPUT : documents; vocab.
-# DOES  : hold out, at random under heldout_seed, half of the tokens of floor(0.1 N) documents
-#         (documents with a single distinct term are skipped by the package function); every
-#         document survives; terms whose every occurrence was held out are dropped from the
-#         vocabulary by the package function and the documents re-indexed. The object is saved
-#         under the input key so every K (and any re-run) uses exactly the same held-out data.
-# OUTPUT: heldout (documents, vocab, missing); heldout_construction table; models/heldout_common.rds.
+# Holds out half the tokens of 10% of documents under heldout_seed; saved under the input key so every K
+# and any re-run uses the same held-out data.
 input_key <- digest(list(dim(dtm_stm), length(dtm_stm@x), sum(dtm_stm), digest(vocab), digest(docs_stm$doc_key), digest(meta_df), heldout_seed, heldout_N_share, heldout_proportion), algo = "sha256")
 heldout_N <- floor(heldout_N_share * length(documents))
 heldout_key_file <- file.path(model_dir, "heldout_common_key.txt")
@@ -930,11 +820,7 @@ heldout_construction <- tibble(
 mark_stage("heldout")
 
 # ---- Common input for the workers ----
-# INPUT : heldout; meta_df; the STM settings.
-# DOES  : save everything a worker needs (the held-out documents and vocabulary, the missing tokens,
-#         the covariate table, the formula strings and settings) under a run key of the input and
-#         the settings; write the sampler script.
-# OUTPUT: models/common_input.rds; run_key; models/memory_sampler.R.
+# Saves everything a worker needs under a run key and writes the sampler script.
 settings <- list(K_values = K_values, init_type = init_type, stm_seed = stm_seed, max_em_its = max_em_its, emtol = emtol, report_every = report_every,
                  gamma_prior = gamma_prior, kappa_prior = kappa_prior, sigma_prior = sigma_prior, interactions = interactions, coherence_M = coherence_M,
                  label_n_words = label_n_words, prevalence_string = prevalence_string, content_string = content_string, heldout_seed = heldout_seed,
@@ -949,13 +835,8 @@ mark_stage("common_input")
 log_line("common input saved; run key", substr(run_key, 1, 12))
 
 # ---- Self-check: the searchK reimplementation against a literal searchK() call ----
-# INPUT : documents; vocab; meta_df.
-# DOES  : on a small seeded subset (re-indexed vocabulary, unused factor levels dropped), run
-#         stm::searchK() literally with the same specification, then repeat its body step by step
-#         (make.heldout under the same seed, stm, eval.heldout, checkResiduals, bound, lbound,
-#         em.its) and compare every number; record the package warning searchK emits for content
-#         covariate models and which statistics it omits.
-# OUTPUT: selfcheck table; selfcheck_equal.
+# On a small seeded subset, runs stm::searchK() and the step-by-step version with the same seed and
+# compares every statistic.
 t1 <- Sys.time()
 set.seed(selfcheck_seed)
 sc_idx <- sort(unique(c(sample(length(documents), min(selfcheck_n, length(documents))), which(meta_df$doc_type == "submission")[seq_len(min(100L, sum(meta_df$doc_type == "submission")))])))
@@ -991,14 +872,8 @@ mark_stage("selfcheck")
 log_line("self-check: reimplementation identical to literal searchK:", selfcheck_equal, "; searchK returned", paste(names(sc_literal_tbl), collapse = ", "), "; warning:", paste(unique(sc_warnings), collapse = " | "))
 
 # ---- Fit K = 10, 20, 30 in worker processes (or load them from the cache) ----
-# INPUT : models/common_input.rds; run_key; the worker cache files.
-# DOES  : for every K whose results are not cached under this run key, launch this script in
-#         worker mode as a separate Rscript process (at most `concurrency` at once, largest K
-#         first), record the launch (pid, system memory available), poll until every worker has
-#         ended, log progress lines from the fit consoles, and record failures without stopping
-#         the other fits. Then load every completed K's model and diagnostics.
-# OUTPUT: worker_runs table; fits (list by K of model, fit_record, heldout_eval, semcoh, labels,
-#         residuals); K_done.
+# Launches one Rscript worker per uncached K (at most `concurrency` at once, largest K first), polls until
+# all end, records failures without stopping the others, then loads each completed K.
 worker_result_files <- function(K) c(worker_file(K, "stm"), worker_file(K, "fit_record"), worker_file(K, "heldout_eval"), worker_file(K, "semcoh"), worker_file(K, "labels"), worker_file(K, "residuals"))
 worker_state <- function(K) { sf <- worker_status_path(K); if (!file.exists(sf)) c("absent", NA, NA, NA) else { x <- readLines(sf, warn = FALSE); c(x, rep(NA, 4 - length(x)))[1:4] } }
 worker_done <- function(K) { st <- worker_state(K); !force_refit && identical(st[1], "done") && identical(st[2], run_key) && all(file.exists(worker_result_files(K))) }
@@ -1075,18 +950,8 @@ mark_stage("load_fits")
 log_line("fits loaded:", paste(sprintf("K = %d (%d iterations, converged %s)", K_done, vapply(fits, function(f) f$model$convergence$its, numeric(1)), vapply(fits, function(f) f$model$convergence$converged, logical(1))), collapse = "; "))
 
 # ---- Per-K summaries: searchK statistics, convergence, runtime, topics, documents ----
-# INPUT : fits; heldout; docs_stm; docs; X_design.
-# DOES  : for every completed K read the searchK statistics (held-out likelihood, residual
-#         dispersion, bound, lbound, em.its), the separately computed semantic coherence and the
-#         exclusivity attempt, the convergence trace with per-iteration E- and M-step seconds
-#         parsed from the fit console, the runtime and memory record (fit record and sampler
-#         trace), the marginal (aspect-weighted) topic-word distribution, sageLabels/labelTopics
-#         word rankings and kappa words, NPMI coherence over the top ten marginal words, topic
-#         prevalence by document type, document concentration, representative documents under
-#         findThoughts and the Tier 2 rule, the L1 prevalence coefficients by covariate term
-#         (gamma sparsity), the content-covariate kappa sparsity, held-out likelihood by document
-#         type, and theta correlations.
-# OUTPUT: one long table per quantity with a K column; per-K objects kept in `per_k`.
+# For each K: searchK statistics, coherence, convergence trace, runtime and memory, labels, NPMI coherence,
+# prevalence by type, representative documents, L1 sparsity, held-out likelihood by type, theta correlations.
 texts_stm <- docs$text[modeled_rows]
 vocab_fit <- heldout$vocab
 V_fit     <- length(vocab_fit)
@@ -1340,12 +1205,8 @@ mark_stage("summaries")
 log_line("summaries built for K =", paste(K_done, collapse = ", "))
 
 # ---- Topic correspondence across K values (inexpensive) ----
-# INPUT : per_k (marginal betas, theta).
-# DOES  : for every pair of completed K values, the cosine similarity between the marginal
-#         topic-word distributions (all pairs of topics), each topic's best match in the other
-#         model in both directions, a one-to-one assignment (Hungarian, maximising total cosine),
-#         and the correlation of document-topic proportions across the two models.
-# OUTPUT: correspondence_cosine, correspondence_best_match, correspondence_theta.
+# Cosine similarity of marginal topic-word distributions between K values, best matches in both directions,
+# a Hungarian one-to-one assignment, and theta correlations.
 pairs <- if (length(K_done) >= 2) combn(K_done, 2, simplify = FALSE) else list()
 corr_cos_rows <- list(); corr_best_rows <- list(); corr_theta_rows <- list(); corr_summary_rows <- list()
 for (pr in pairs) {
@@ -1375,14 +1236,8 @@ within_k_nearest <- topic_summary |> transmute(K, topic, nearest_topic_by_beta_c
 mark_stage("correspondence")
 
 # ---- Linkage verification after fitting ----
-# INPUT : per_k; docs_stm; docs; comments; submissions; heldout; the inventory tables.
-# DOES  : confirm that every theta row is the STM document with the same doc_key, that every
-#         document matches exactly one source record with the same author, thread and parent
-#         identifiers, that the covariate factors carry the expected level counts, that the stm
-#         documents equal a second tokenisation of the stored text (every sample_stride-th
-#         document, allowing for the held-out tokens), and count the author, thread, parent and
-#         submission joins against the inventory's documented values where they apply.
-# OUTPUT: linkage_checks; recount_matches.
+# Checks each theta row against its doc_key, source record, author, thread and parent, re-tokenises every
+# sample_stride-th document, and compares join counts with the inventory.
 recompute_tokens <- function(text) {
   x <- stri_replace_all_regex(stri_replace_all_fixed(stri_trans_tolower(text), "’", "'"), url_regex, " ", opts_regex = url_opts)
   t <- stri_extract_all_regex(x, token_regex, omit_no_match = TRUE)[[1]]
@@ -1463,12 +1318,7 @@ mark_stage("linkage")
 log_line("linkage:", sum(recount_matches), "of", length(sample_idx), "sampled documents re-tokenised identically;", sum(linkage_checks$equal_to_documented, na.rm = TRUE), "of", sum(!is.na(linkage_checks$equal_to_documented)), "documented values reproduced")
 
 # ---- Figures ----
-# INPUT : the tables above.
-# DOES  : PNG figures with a title, axis titles, tick labels and a legend where more than one
-#         series or a colour scale is shown; no annotations. K = 10, 20, 30 use the validated
-#         categorical slots 1-3 (blue, orange, aqua); document types blue / orange; heatmaps a
-#         single blue ramp.
-# OUTPUT: figures/*.png.
+# PNG figures; K = 10, 20, 30 use categorical slots 1-3 (blue, orange, aqua), heatmaps a single blue ramp.
 ink_series <- "#2a78d6"; ink_series_2 <- "#eb6834"; ink_series_3 <- "#1baf7a"; ink_red <- "#e34948"; ink_text <- "#0b0b0b"; ink_sub <- "#52514e"; ink_muted <- "#898781"
 grid_col <- "#e1e0d9"; axis_col <- "#c3c2b7"; mid_grey <- "#f0efec"
 stage_colours <- c(ink_series, ink_series_2, ink_series_3, "#eda100", "#e87ba4", "#008300", "#4a3aa7")
@@ -1574,15 +1424,12 @@ save_fig("fig10_heldout_by_doc_type.png", fig10, 7, 5)
 mark_stage("figures")
 
 # ---- Validation ----
-# INPUT : every object above.
-# DOES  : checks that must hold before the tables are written (blocking) plus the completion
-#         check (recorded, not blocking, so partial evidence is still written); the script stops
-#         after writing validation_checks.csv if a blocking check fails.
-# OUTPUT: validation_checks.
+# Blocking checks run before tables are written. The completion check is recorded without blocking, so
+# partial results are still written.
 checks <- list()
 add_check <- function(check, detail, pass, blocking = TRUE) checks[[length(checks) + 1L]] <<- tibble(check = check, detail = detail, pass = isTRUE(pass), blocking = blocking)
-add_check("source files read: 7 comment files and 1 submission file, rows equal the delivered counts", sprintf("%d + %d rows", n_comments_all, n_submissions_all), n_comments_all == 891397 && n_submissions_all == 10747)
-add_check("every delivered artifact read matches the SHA256 in its manifest", sprintf("%d of %d existing files (%d sidecars parse as strict YAML)", sum(input_integrity$hash_equals_manifest), sum(input_integrity$exists), sum(input_integrity$manifest_parses_as_strict_yaml)), all(input_integrity$hash_equals_manifest[input_integrity$exists]))
+add_check("source files read: 7 comment files and 1 submission file, rows equal the earlier counts", sprintf("%d + %d rows", n_comments_all, n_submissions_all), n_comments_all == 891397 && n_submissions_all == 10747)
+add_check("every earlier output read matches the SHA256 in its manifest", sprintf("%d of %d existing files (%d sidecars parse as strict YAML)", sum(input_integrity$hash_equals_manifest), sum(input_integrity$exists), sum(input_integrity$manifest_parses_as_strict_yaml)), all(input_integrity$hash_equals_manifest[input_integrity$exists]))
 add_check("Tier 2 representation reproduced: every reconciliation item equal", sprintf("%d of %d equal", sum(tier2_reconciliation$equal), nrow(tier2_reconciliation)), all(tier2_reconciliation$equal))
 add_check("STM documents: every entering document survives the conversion and every token is kept",
           sprintf("%d in, %d out; tokens %d in, %d out", n_stm_in, length(documents), tokens_stm_in, sum(doc_tokens_stm)), length(documents) == n_stm_in && sum(doc_tokens_stm) == tokens_stm_in)
@@ -1654,10 +1501,7 @@ mark_stage("validation")
 log_line("validation:", sum(validation_checks$pass), "of", nrow(validation_checks), "checks pass;", sum(!validation_checks$pass & validation_checks$blocking), "blocking failures")
 
 # ---- Write tables ----
-# INPUT : the measurement objects above.
-# DOES  : write one CSV per table and record its dimensions for the sidecars; stop before
-#         writing anything else if a blocking validation check failed.
-# OUTPUT: CSV files under tables/.
+# One CSV per table; stops first if a blocking validation check failed.
 table_dims <- list()
 write_table <- function(tbl, name) {
   path <- file.path(tab_dir, name)
@@ -1677,7 +1521,7 @@ parameters_table <- tibble(
             "stm::make.heldout (as searchK)", heldout_seed, heldout_N, heldout_proportion, coherence_M, "not computed: stm::exclusivity() stops for content covariate models (recorded)", label_n_words, frex_weight, correlation_cutoff, n_representative, representative_min_tokens, active_topic_threshold,
             paste(band_labels, collapse = "; "), sample_stride, selfcheck_n, paste(selfcheck_K, collapse = ", "), selfcheck_its, selfcheck_seed, paste(sprintf("%s: df %d", smooth_terms, vapply(spline_info, function(s) s$df, integer(1))), collapse = "; "),
             format(cov_build$placeholders[["num_comments"]]), format(cov_build$placeholders[["upvote_ratio"]]),
-            "delivered Tier 2 LDA representation: lower case; U+2019 -> '; URLs removed; Unicode letter-run tokens with internal apostrophes; trailing 's stripped; tokens < 2 chars removed; 310 Tier 2 entries removed; marker-only documents excluded; terms kept when 5 <= df <= 50% of non-marker documents; no stemming",
+            "Tier 2 LDA representation: lower case; U+2019 -> '; URLs removed; Unicode letter-run tokens with internal apostrophes; trailing 's stripped; tokens < 2 chars removed; 310 Tier 2 entries removed; marker-only documents excluded; terms kept when 5 <= df <= 50% of non-marker documents; no stemming",
             stopword_source, workbook_hash, min_token_chars, min_document_frequency, max_document_share, heldout_share, split_seed, "all Tier 2 modelable documents (no split), then make.heldout", quick_run, if (quick_run) quick_n else NA,
             memory_sampler_on, sampler_interval, concurrency, "one Rscript process per K (this script in worker mode)", paste(K_done, collapse = ", "), if (length(K_failed)) paste(K_failed, collapse = ", ") else "none"))
 write_table(parameters_table,        "parameters.csv")
@@ -1775,11 +1619,7 @@ preservation_status <- bind_rows(
 write_table(preservation_status, "preservation_status.csv")
 
 # ---- Provenance sidecars ----
-# INPUT : the CSV, PNG and RDS outputs; the source files; the workbook; the delivered artifacts read.
-# DOES  : write one <output>.manifest.yml per output (input hashes, output hash and dimensions,
-#         script hash, git commit, parameters, seed, package versions; lite manifests with the
-#         principal dimensions for the RDS objects).
-# OUTPUT: *.manifest.yml next to each output.
+# One <output>.manifest.yml per output with input, output and script hashes, parameters and package versions.
 git_commit <- tryCatch(system2("git", c("-C", project_dir, "rev-parse", "--short", "HEAD"), stdout = TRUE, stderr = FALSE), error = function(e) "")
 if (length(git_commit) == 0L) git_commit <- ""
 manifest_packages <- c("stm", "lda", "glmnet", "matrixStats", "nanoparquet", "dplyr", "tidyr", "stringi", "Matrix", "readxl", "ps", "processx", "clue", "ggplot2", "scales", "patchwork", "readr", "digest", "yaml")
@@ -1788,9 +1628,9 @@ input_files <- c(
   lapply(seq_len(nrow(source_files)), function(i) list(path = source_files$path[i], hash = source_files$sha256[i], format = "parquet", rows = as.integer(source_files$rows[i]), role = "source data, read-only")),
   list(list(path = stopword_workbook, hash = workbook_hash, format = "xlsx", rows = nrow(tier2_raw), cols = ncol(tier2_raw), sheet = stopword_sheet, role = "Tier 2 stopword list, read-only")),
   lapply(which(input_integrity$exists), function(i) list(path = input_integrity$path[i], hash = input_integrity$sha256_now[i], format = if (grepl("\\.rds$", input_integrity$path[i])) "rds" else "csv",
-                                                         role = "delivered artifact, read-only (reconciliation)")))
+                                                         role = "earlier output, read-only (reconciliation)")))
 manifest_parameters <- c(list(model = sprintf("Structural Topic Models (stm::stm variational EM) for K = %s with searchK's held-out construction; prevalence %s (gamma.prior L1); content %s (kappa.prior L1); spectral initialisation", paste(K_values, collapse = ", "), prevalence_string, content_string),
-                              text_representation_source = "the delivered Tier 2 LDA representation reproduced with the delivered code (see parameters.csv)",
+                              text_representation_source = "the Tier 2 LDA representation reproduced with the original code (see parameters.csv)",
                               documents = "all Tier 2 modelable documents (857,385 in the full run), doc_key = Reddit fullname, source order; 10% partially held out by stm::make.heldout",
                               topic_numbering = "each model's own topic index (no renumbering); prevalence_rank is a separate column",
                               retained = "models/heldout_common.rds, common_input.rds, stm_K*.rds, fit_record_K*.rds, heldout_eval_K*.rds, semcoh_K*.rds, labels_K*.rds, residuals_K*.rds"),
@@ -1822,8 +1662,8 @@ write_sidecar <- function(output) {
   manifest$software <- list(language = "R", language_version = paste(R.version$major, R.version$minor, sep = "."), packages = package_versions, os = paste(Sys.info()[["sysname"]], Sys.info()[["release"]]))
   manifest$seed      <- heldout_seed
   manifest$timestamp <- utc_stamp()
-  manifest$notes     <- if (ext == "rds") "Retained object of the STM searchK evidence run (July 2026 r/politics, Tier 2 text representation, K = 10, 20, 30): the common held-out object (documents x vocabulary), the worker input, an STM model object (theta documents x topics), a fit record (console log lines x fields), a held-out evaluation (held-out documents x fields), coherence (topics x measures), labels (topics x words) or residual dispersion (1 x 3). Source Parquet and delivered artifacts read-only." else
-    "STM searchK evidence for K = 10, 20, 30 on the July 2026 r/politics sample (delivered Tier 2 text representation); one common held-out object (make.heldout, seed recorded); prevalence with author, s(created_utc), doc_type, thread_id, parent_id, s(score), s(num_comments), s(upvote_ratio) and missingness indicators under L1; content ~ doc_type; spectral initialisation; no K chosen. Source Parquet and delivered artifacts read-only."
+  manifest$notes     <- if (ext == "rds") "Retained object of the STM searchK evidence run (July 2026 r/politics, Tier 2 text representation, K = 10, 20, 30): the common held-out object (documents x vocabulary), the worker input, an STM model object (theta documents x topics), a fit record (console log lines x fields), a held-out evaluation (held-out documents x fields), coherence (topics x measures), labels (topics x words) or residual dispersion (1 x 3). Source Parquet and earlier outputs read-only." else
+    "STM searchK evidence for K = 10, 20, 30 on the July 2026 r/politics sample (Tier 2 text representation); one common held-out object (make.heldout, seed recorded); prevalence with author, s(created_utc), doc_type, thread_id, parent_id, s(score), s(num_comments), s(upvote_ratio) and missingness indicators under L1; content ~ doc_type; spectral initialisation; no K chosen. Source Parquet and earlier outputs read-only."
   write_yaml(manifest, paste0(output, ".manifest.yml"))
 }
 invisible(lapply(list.files(tab_dir,   pattern = "\\.csv$", full.names = TRUE), write_sidecar))

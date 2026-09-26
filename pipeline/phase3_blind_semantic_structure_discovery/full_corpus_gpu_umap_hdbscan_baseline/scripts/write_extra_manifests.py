@@ -1,11 +1,8 @@
 #!/usr/bin/env python3
-"""Write provenance sidecars for the remaining (non-primary) outputs of the
-full-corpus baseline run -- summary/verification tables, measurement records,
-telemetry, and the diagnostic figures -- so every non-code output carries a
-.manifest.yml, matching the project norm. The primary data artifacts (UMAP 5-D
-and 2-D coordinates, HDBSCAN labels, and the three trees) are already manifested
-by run_full_corpus_umap_hdbscan.py, which is also recorded as the producing script
-here. No GPU required.
+"""Write .manifest.yml sidecars for the secondary outputs of the full-corpus baseline run.
+
+Covers summary and verification tables, measurement records, telemetry and figures; the main data
+files already get manifests from run_full_corpus_umap_hdbscan.py. No GPU needed.
 """
 
 import csv

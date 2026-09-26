@@ -1,37 +1,11 @@
 #!/usr/bin/env Rscript
-# =====================================================================================
-# Phase 4C: build the manual-QC review package for the 25 already-selected clusters.
-# =====================================================================================
-# This script is PACKAGE CONSTRUCTION ONLY. It performs no manual QC, assigns no labels,
-# scores nothing, and interprets no cluster. It reconnects the 25 selected Phase 3
-# clusters to their assigned canonical Reddit records using the EXACT Phase 4A linkage
-# (hdbscan_labels.parquet -> message_events.parquet by doc_key), draws the manual-review
-# documents, folds in the existing Phase 4A representatives + descriptors, and writes a
-# reproducible human-review package.
-#
-# Inputs (ALL read-only; nothing upstream is recomputed or modified):
-#   planning/selected_clusters.csv                       (authoritative 25-cluster list)
-#   phase3 .../hdbscan_labels.parquet                    (cluster label + membership prob)
-#   phase2 .../embedding_index.parquet                   (row-alignment consistency check)
-#   phase1 .../message_events.parquet                    (canonical text + metadata)
-#   4a .../representative_documents.parquet               (existing 5 cn + 5 hm reps)
-#   4a .../ctfidf_top_terms.parquet                       (existing c-TF-IDF descriptors)
-#   4a .../cluster_inventory.parquet                      (full cluster sizes)
-#
-# Outputs (under 4c_manual_qc/):
-#   review_package/review_documents.parquet  + .csv
-#   review_package/review_cluster_descriptors.csv
-#   review_package/review_cluster_overview.csv
-#   review_package/manual_qc_review_form.csv   (human-judgment fields left BLANK)
-#   review_package/clusters/cluster_<id>_<group>.md   (one per selected cluster)
-#   review_package/REPORT.md
-#   derived/manual_review_sampled_documents.csv        (the 1,647 manual-review doc_keys)
-#
-# Reproducibility: deterministic given the fixed inputs + seed 20260912. The sampling
-# RNG is pinned (kind + seed) and the sampled doc_key set is hashed for a re-run check.
-# No manifest sidecars are written by design; provenance
-# is folded into REPORT.md, consistent with Phase 4A/4B/4C-planning.
-# =====================================================================================
+# Phase 4C: build the manual-QC review package for the 25 selected clusters (package construction only).
+# Links the clusters to their documents as in Phase 4A (hdbscan_labels -> message_events by doc_key),
+# samples 100 documents from each of the 10 largest clusters (seed 20260912), takes the 15 random
+# clusters whole, and adds the Phase 4A representatives and c-TF-IDF descriptors.
+# Inputs: planning/selected_clusters.csv, Phase 1-3 outputs, Phase 4A derived/ files.
+# Outputs: review_package/ (documents, descriptors, overview, blank review form, per-cluster .md,
+#   REPORT.md with provenance) and derived/manual_review_sampled_documents.csv. Env: KC_REPO_ROOT.
 
 suppressWarnings(suppressMessages({
   library(nanoparquet)
@@ -71,7 +45,7 @@ dir.create(DER, recursive = TRUE, showWarnings = FALSE)
 SEED     <- 20260912L   # matches the established Phase 4C planning seed
 N_SAMPLE <- 100L        # 100-document manual-review depth for the 10 largest clusters
 
-# expected Phase 3 measurements (consistency checks, NOT re-validation)
+# expected Phase 3 measurements (consistency checks, not re-validation)
 EXP_TOTAL    <- 902144L
 EXP_ASSIGNED <- 457880L
 EXP_NOISE    <- 444264L
@@ -180,11 +154,11 @@ cat(sprintf("[ok] reconnected %d docs across 25 clusters; per-cluster sizes matc
 
 # =====================================================================================
 # SECTION 4. Manual-review document selection.
-#   largest : simple random sampling WITHOUT replacement of 100 docs per cluster.
+#   largest : simple random sampling without replacement of 100 docs per cluster.
 #   random  : the entire cluster (no additional sampling).
-# Determinism: pin RNG kind + seed ONCE; process the 10 largest clusters in the planning
+# Determinism: pin RNG kind + seed once; process the 10 largest clusters in the planning
 # CSV order (n_docs desc, ties cluster_id asc); within each cluster sample positions over
-# the doc_key-ASCENDING document order via sample.int(n, 100).
+# the doc_key-ascending document order via sample.int(n, 100).
 # =====================================================================================
 RNGkind("Mersenne-Twister", "Inversion", "Rejection")
 rng_kind <- RNGkind()
@@ -208,8 +182,8 @@ cat(sprintf("[ok] manual-review set: 1000 sampled (10x100) + 647 full-cluster = 
 
 # =====================================================================================
 # SECTION 5. Existing Phase 4A representatives (5 centroid_nearest + 5 highest_membership).
-#   Overlap (a doc chosen by both methods, or also in the manual set) is PRESERVED as
-#   flags on a single row -- never deduplicated away.
+#   Overlap (a doc chosen by both methods, or also in the manual set) is kept as flags
+#   on a single row.
 # =====================================================================================
 reps <- as.data.table(nanoparquet::read_parquet(P4A_REPS))
 reps <- reps[cluster_id %in% ids_all]

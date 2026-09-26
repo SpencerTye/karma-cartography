@@ -1,31 +1,22 @@
 #!/usr/bin/env python
-"""Phase 2 benchmark: steady-state throughput of Qwen3-Embedding-4B and 0.6B on GPU (TEI) and CPU.
+"""Steady-state embedding throughput of Qwen3-Embedding-4B and 0.6B on GPU (TEI) and CPU.
 
-Measures, on real documents of the canonical Phase 1 table, the warmed-up embedding throughput
-and resource use of four configurations: Qwen3-Embedding-4B and Qwen3-Embedding-0.6B served by
-Hugging Face Text Embeddings Inference (TEI, the release image) on the RTX 3090 under a 21 GiB
-device ceiling, and the same two models on the CPU with transformers + PyTorch inside a 21 GiB
-memory scope on the 8 logical CPUs of the WSL2 VM. It also measures, directly, the largest TEI
-`max_batch_tokens` with which the 0.6B model stays under the 21 GiB ceiling. Nothing is
-extrapolated; no full-corpus embedding, similarity analysis, clustering, indexing or model choice.
+Input: real documents from the canonical Phase 1 table. GPU runs use TEI on the RTX 3090 under a
+21 GiB device ceiling; CPU runs use transformers + PyTorch in a 21 GiB scope on 8 threads. Also
+finds the largest TEI max_batch_tokens that keeps 0.6B under the ceiling.
+Outputs: results tables, environment record and REPORT.md.
 
-Stages (run inside the WSL2 venv; see ../README.md):
-  prepare                   verify the inputs, compare the 0.6B tokenizer with the 4B tokenizer on
-                            every document, build the benchmark stream, build the cap shim, record
-                            the image, Docker, driver, host and model facts
-  gpu_calibrate --model M   one TEI container at the model's minimum budget: untracked device
-                            overhead, /info, TEI's token counts of the candidates and a stream sample
-  gpu_search                the 0.6B max_batch_tokens search (bracket, bisection, confirmation)
-  gpu_throughput --model M  3 warm-up and 10 measured pipelined batches at the model's budget
-  cpu_sweep --model M       the bounded CPU batching sweep (one worker, 21 GiB scope, 8 threads)
-  cpu_throughput --model M  3 warm-up and 10 measured CPU batches at the chosen budget
-  cpu_worker                internal: the CPU process started by cpu_sweep and cpu_throughput
-  compare                   float16 (GPU, TEI) versus float32 (CPU) embeddings of the same documents
-  report                    the tables, the environment record and REPORT.md
+Stages (run in the WSL2 venv; see ../README.md):
+  prepare                   verify inputs, compare tokenizers, build the stream and cap shim
+  gpu_calibrate --model M   one TEI container at the minimum budget (overhead, /info, token counts)
+  gpu_search                0.6B max_batch_tokens search (bracket, bisection, confirmation)
+  gpu_throughput --model M  3 warm-up and 10 measured batches on the GPU
+  cpu_sweep --model M       bounded CPU batching sweep
+  cpu_throughput --model M  3 warm-up and 10 measured batches on the CPU
+  cpu_worker                internal: the CPU process started by the CPU stages
+  compare                   float16 GPU vs float32 CPU embeddings of the same documents
+  report                    tables, environment record and REPORT.md
   all                       every stage in order
-
-Layout: pure functions first (unit-tested by ../tests/test_throughput_benchmark_functions.py),
-then the runtime helpers, then the stages.
 """
 
 from __future__ import annotations

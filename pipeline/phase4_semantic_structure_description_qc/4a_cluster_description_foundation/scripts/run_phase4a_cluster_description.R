@@ -1,25 +1,11 @@
 #!/usr/bin/env Rscript
-# =====================================================================================
-# Phase 4A: cluster-description foundation
-# =====================================================================================
-# Reconnects the 5,167 assigned full-corpus HDBSCAN semantic clusters (Phase 3) to the
-# canonical Reddit records (Phase 1) and produces, WITHOUT interpreting the clusters:
-#   (1) a basic cluster inventory;
-#   (2) top-10 BERTopic-style c-TF-IDF unigram/bigram descriptors per cluster;
-#   (3) five semantic-centroid representative documents per cluster;
-#   (4) five highest-HDBSCAN-membership representative documents per cluster;
-#   (5) direct-parent context for representative comments when the parent is in-dataset.
-#
-# HDBSCAN label -1 (unassigned / noise) is NOT a description target. No source artifact
-# is modified. All choices (filtering, joining, tokenization, feature construction,
-# centroid construction, ranking, tie-breaking) are explicit and deterministic below.
-#
-# Usage:
-#   Rscript run_phase4a_cluster_description.R            # FULL run
-#   Rscript run_phase4a_cluster_description.R --quick    # smoke run (few clusters)
-#
-# The run is fully deterministic: no random operations, no seed dependence.
-# =====================================================================================
+# Phase 4A: cluster-description foundation.
+# Joins the 5,167 assigned HDBSCAN clusters (Phase 3) to the Phase 1 records and writes a cluster
+# inventory, top-10 c-TF-IDF unigram/bigram descriptors, five centroid-nearest and five
+# highest-membership representative documents per cluster (with in-dataset parent context), and
+# centroids. Noise (label -1) is excluded. Outputs go to derived/ and figures/; the run is deterministic.
+# Usage: Rscript run_phase4a_cluster_description.R [--quick]   (--quick = smoke run on a few clusters)
+# Env: KC_REPO_ROOT (default: working directory).
 
 suppressWarnings(suppressMessages({
   library(nanoparquet)
@@ -53,7 +39,7 @@ D_FIG    <- file.path(OUT, "figures")
 dir.create(D_DER, recursive = TRUE, showWarnings = FALSE)
 dir.create(D_FIG, recursive = TRUE, showWarnings = FALSE)
 
-# ---- expected Phase 3 measurements (consistency checks, NOT re-validation) -------------
+# ---- expected Phase 3 measurements (consistency checks, not re-validation) -------------
 EXP_TOTAL    <- 902144L
 EXP_CLUSTERS <- 5167L
 EXP_ASSIGNED <- 457880L
@@ -282,7 +268,7 @@ top_terms <- timeit("c-tf-idf: score+rank", {
   x[, f_x := sum(n), by = term]                         # global term frequency across classes
   grand <- sum(x$n)
   n_classes_terms <- uniqueN(x$cl)   # classes with >= 1 term after stopword removal
-  n_classes <- n_ad_clusters         # ALL assigned clusters are classes (incl. any 0-term class)
+  n_classes <- n_ad_clusters         # all assigned clusters are classes (incl. any 0-term class)
   A <- grand / n_classes             # average number of term tokens per class (BERTopic X.shape[0])
   x[, tf := n / class_total]
   x[, idf := log(1 + A / f_x)]
@@ -341,7 +327,7 @@ emb <- timeit("load embeddings", {
   }
 })
 stopifnot(ncol(emb) == nrow(ad), nrow(emb) == EMB_DIM)
-# validate embedding alignment against the trusted per-row seek reader (cheap; in FULL mode
+# validate embedding alignment against the per-row seek reader (cheap; in full mode
 # this catches any whole-file read / column-subset misalignment)
 chk_idx <- unique(round(seq(1, nrow(ad), length.out = min(6L, nrow(ad)))))
 stopifnot(max(abs(emb[, chk_idx, drop = FALSE] - read_npy_rows(P2_NPY, ad$row0[chk_idx]))) < 1e-6)
@@ -398,11 +384,11 @@ reps <- rbindlist(list(rep_cn, rep_hm), use.names = TRUE)
 # cosine is the selection metric only for centroid_nearest ("where applicable")
 reps[method == "highest_membership", cosine_to_centroid := NA_real_]
 
-# ---- parent reconnection for representative COMMENTS -------------------------------------
+# ---- parent reconnection for representative comments -------------------------------------
 fmt_utc <- function(x) format(as.POSIXct(x, origin = "1970-01-01", tz = "UTC"),
                               "%Y-%m-%d %H:%M:%S UTC")
 reps[, is_comment := record_type == "comment"]
-# resolve the direct parent ONLY for representative comments, and only when the parent_id
+# resolve the direct parent only for representative comments, and only when the parent_id
 # is present as a doc_key in the canonical dataset (match() -> NA otherwise). Parent columns
 # stay NA for submissions and for comments whose parent is not in-dataset.
 plk <- fifelse(reps$is_comment, reps$parent_id, NA_character_)

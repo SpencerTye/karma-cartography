@@ -1,17 +1,9 @@
-# July 2026 r/politics sample — TF-IDF cosine similarity, comment to submission
-#
-# Standalone side analysis. Reads the raw Parquet comment and submission files,
-# verifies the comment-to-submission link, represents every eligible comment and
-# its submission as TF-IDF vectors over whitespace-delimited tokens, and measures
-# the cosine similarity between each comment and its own submission under two
-# submission representations (title; title + selftext). Source Parquet is
-# read-only. All outputs are written under r_analysis_outputs/tfidf_similarity/
-# and are reproducible by re-running this script top to bottom.
+# TF-IDF cosine similarity between each r/politics comment and its own submission (July 2026 sample).
+# Input: comment and submission Parquet files under data_sample/.
+# Tokens are whitespace-delimited; the submission is represented as title only and as title + selftext.
+# Output: tables, figures and manifest sidecars under r_analysis_outputs/tfidf_similarity/.
 
 # ---- Setup: packages, paths, output directories ----
-# INPUT : none.
-# DOES  : load packages; define source paths; create output folders.
-# OUTPUT: path variables; figures/ and tables/ directories.
 library(nanoparquet)
 library(dplyr)
 library(tidyr)
@@ -38,10 +30,7 @@ comment_files    <- list.files(comments_dir,    pattern = "\\.parquet$", full.na
 submission_files <- list.files(submissions_dir, pattern = "\\.parquet$", full.names = TRUE)
 
 # ---- Read source data ----
-# INPUT : 7 comment Parquet files + 1 submission Parquet file (read-only).
-# DOES  : read each file and stack; keep the columns used below (column
-#         selection only; no rows dropped); cast created_utc to double.
-# OUTPUT: comments (one row per comment); submissions (one row per submission).
+# 7 comment files and 1 submission file; keep only the columns used below.
 comments <- lapply(comment_files, read_parquet) |>
   bind_rows() |>
   select(id, link_id, parent_id, author, created_utc, subreddit, body) |>
@@ -56,10 +45,7 @@ n_comments_all    <- nrow(comments)
 n_submissions_all <- nrow(submissions)
 
 # ---- Text-field availability ----
-# INPUT : comments (body, author); submissions (title, selftext, author).
-# DOES  : classify every value of each text field as missing, empty, one of the
-#         deletion/removal markers, or other text; count. Nothing is altered.
-# OUTPUT: text_availability (one row per field x state).
+# Count each text field's values as missing, empty, a deletion/removal marker, or text.
 text_state <- function(x) case_when(
   is.na(x)                     ~ "missing (NA)",
   x == ""                      ~ "empty string",
@@ -82,14 +68,8 @@ text_availability <- bind_rows(
 n_text_missing <- sum(is.na(comments$body)) + sum(is.na(submissions$title)) + sum(is.na(submissions$selftext))
 
 # ---- Verify the comment-to-submission relationship ----
-# INPUT : comments (id, link_id, subreddit, created_utc); submissions (id, ...).
-# DOES  : check id uniqueness and form on both sides; check every link_id has
-#         the form 't3_' + base36; submission_id = link_id without the prefix,
-#         looked up in submissions$id. A comment is matched (eligible) when the
-#         lookup succeeds; a submission is modeled when at least one eligible
-#         comment points to it. Compare subreddit and creation order on pairs.
-# OUTPUT: comments with submission_id / matched; submissions with modeled;
-#         population and pairing counts.
+# submission_id = link_id without 't3_'. A comment is eligible when its submission is
+# in the sample; a submission is modeled when an eligible comment points to it.
 n_comment_id_distinct    <- n_distinct(comments$id)
 n_comment_id_missing     <- sum(is.na(comments$id))
 n_submission_id_distinct <- n_distinct(submissions$id)
@@ -116,13 +96,7 @@ n_pairs_same_subreddit          <- sum(comments$subreddit[comments$matched] == s
 n_pairs_comment_before_submission <- sum(comments$created_utc[comments$matched] < submissions$created_utc[pair_lookup])
 
 # ---- Eligible population, modeled submissions, text construction ----
-# INPUT : comments (matched); submissions (modeled).
-# DOES  : keep matched comments and modeled submissions. Comment text = body
-#         exactly as stored. Submission text, two forms: title exactly as
-#         stored; title, one space, selftext exactly as stored. Record each
-#         comment's row in the modeled-submission table.
-# OUTPUT: eligible (one row per eligible comment); modeled (one row per
-#         modeled submission, with title_text and full_text).
+# Comment text is the stored body. Submission text is the title, or title + " " + selftext.
 eligible <- comments |>
   filter(matched) |>
   select(comment_id = id, submission_id, link_id, parent_id,
@@ -139,14 +113,8 @@ eligible <- eligible |>
   mutate(submission_row = match(submission_id, modeled$submission_id))
 
 # ---- Tokenization (the only text transformation) ----
-# INPUT : eligible$body; modeled$title_text; modeled$full_text.
-# DOES  : split each text on runs of Unicode whitespace (ICU regex \s+) and
-#         drop the empty pieces produced by leading/trailing whitespace. Case,
-#         punctuation, URLs, markdown, markers such as [removed], and repeated
-#         tokens are kept exactly as written: a term is an exact
-#         whitespace-delimited character string. Count tokens per document.
-# OUTPUT: tokens_comment, tokens_title, tokens_full (one character vector per
-#         document); token and character counts on eligible / modeled.
+# Split on runs of Unicode whitespace (ICU \s+). Case, punctuation, URLs and markup
+# are kept, so a term is an exact whitespace-delimited string.
 tokens_comment <- stri_split_regex(eligible$body,       "\\s+", omit_empty = TRUE)
 tokens_title   <- stri_split_regex(modeled$title_text,  "\\s+", omit_empty = TRUE)
 tokens_full    <- stri_split_regex(modeled$full_text,   "\\s+", omit_empty = TRUE)
@@ -159,12 +127,8 @@ modeled <- modeled |>
          full_n_tokens  = lengths(tokens_full))
 
 # ---- Vocabulary and document collection ----
-# INPUT : tokens_comment; tokens_full.
-# DOES  : the document collection is every eligible comment plus every modeled
-#         submission in its title + selftext form (one document each). The
-#         vocabulary is the set of distinct tokens in the collection; the
-#         title-only form uses the same vocabulary (its tokens are a subset).
-# OUTPUT: vocabulary; n_docs; collection_tokens / collection_doc index vectors.
+# Collection = eligible comments plus modeled submissions (title + selftext).
+# The title-only form uses the same vocabulary.
 n_docs_comment    <- length(tokens_comment)
 n_docs_submission <- length(tokens_full)
 n_docs            <- n_docs_comment + n_docs_submission
@@ -177,13 +141,7 @@ vocabulary        <- unique(collection_tokens)
 n_vocabulary      <- length(vocabulary)
 
 # ---- Term-frequency matrices ----
-# INPUT : collection_tokens, collection_doc, vocabulary; tokens_title.
-# DOES  : one row per document, one column per vocabulary term, cell = number
-#         of times the term occurs in the document (sparseMatrix sums repeated
-#         (document, term) pairs). Split the collection matrix into its comment
-#         rows and submission rows; build the title-only matrix on the same
-#         vocabulary.
-# OUTPUT: tf_collection; tf_comment; tf_full; tf_title (sparse, raw counts).
+# Sparse raw counts, documents x terms (sparseMatrix sums repeated pairs).
 tf_collection <- sparseMatrix(i = collection_doc,
                               j = match(collection_tokens, vocabulary),
                               x = 1, dims = c(n_docs, n_vocabulary), repr = "C")
@@ -196,11 +154,7 @@ tf_title <- sparseMatrix(i = rep(seq_len(n_docs_submission), lengths(tokens_titl
                          x = 1, dims = c(n_docs_submission, n_vocabulary), repr = "C")
 
 # ---- Document frequency and IDF ----
-# INPUT : tf_collection; tf_comment; tf_full.
-# DOES  : df(term) = number of collection documents containing the term;
-#         idf(term) = ln(n_docs / df). No smoothing; no term is dropped. Also
-#         count where each term occurs (comments, submissions, both).
-# OUTPUT: term_df; term_idf; vocabulary_top_df (50 most frequent terms).
+# idf = ln(n_docs / df), no smoothing, no terms dropped.
 term_df  <- colSums(tf_collection > 0)
 term_idf <- log(n_docs / term_df)
 
@@ -217,15 +171,9 @@ vocabulary_top_df <- tibble(term = vocabulary, df = term_df, idf = term_idf,
   arrange(desc(df), term) |>
   slice_head(n = 50)
 
-# ---- Tokenization report (what the one transformation affects) ----
-# INPUT : token lists; vocabulary.
-# DOES  : count documents and tokens per text set, zero-token documents, and
-#         describe the vocabulary that the exact-string term definition
-#         produces (URL-like terms, terms with edge punctuation, terms with
-#         upper-case letters). The "distinct terms if ..." rows are what the
-#         vocabulary would collapse to under transformations that were NOT
-#         applied; they are reported for inspection only.
-# OUTPUT: tokenization_report (item, value).
+# ---- Tokenization report ----
+# The "distinct terms if ..." rows show what the vocabulary would shrink to under
+# normalisations that were not applied.
 vocab_lower      <- stri_trans_tolower(vocabulary)
 vocab_edge_strip <- stri_replace_all_regex(vocabulary, "^[\\p{P}\\p{S}]+|[\\p{P}\\p{S}]+$", "")
 
@@ -256,10 +204,7 @@ tokenization_report <- tribble(
 )
 
 # ---- TF-IDF weighting ----
-# INPUT : tf_comment; tf_title; tf_full; term_idf.
-# DOES  : weight(document, term) = count x idf(term), the same idf for all
-#         three matrices; Euclidean norm of every document vector.
-# OUTPUT: w_comment; w_title; w_full; norm_comment; norm_title; norm_full.
+# weight = count x idf, same idf for all three matrices; Euclidean norms.
 idf_diagonal <- Diagonal(x = term_idf)
 w_comment <- tf_comment %*% idf_diagonal
 w_title   <- tf_title   %*% idf_diagonal
@@ -269,13 +214,8 @@ norm_title   <- sqrt(rowSums(w_title^2))
 norm_full    <- sqrt(rowSums(w_full^2))
 
 # ---- Cosine similarity, comment to its own submission ----
-# INPUT : w_comment; w_title; w_full; eligible$submission_row; norms.
-# DOES  : for each eligible comment take its submission's weight row; dot =
-#         sum over terms of comment weight x submission weight; cosine = dot /
-#         (comment norm x submission norm). When either norm is 0 (no tokens)
-#         the cosine is undefined: stored as NA with the reason in a status
-#         column. No comment is removed.
-# OUTPUT: eligible with cosine_title, cosine_title_selftext, status columns.
+# cosine = dot / (comment norm x submission norm). A zero norm gives NA, with the
+# reason in a status column.
 row_s <- eligible$submission_row
 dot_title <- rowSums(w_comment * w_title[row_s, , drop = FALSE])
 dot_full  <- rowSums(w_comment * w_full[row_s, , drop = FALSE])
@@ -307,11 +247,7 @@ n_cosine_above_one_title        <- sum(eligible$cosine_title > 1 + 1e-12, na.rm 
 n_cosine_above_one_full         <- sum(eligible$cosine_title_selftext > 1 + 1e-12, na.rm = TRUE)
 
 # ---- Derived similarity table ----
-# INPUT : eligible; modeled.
-# DOES  : one row per eligible comment: identifiers, authors, timestamps,
-#         lengths, both cosine values, both status flags (submission fields
-#         joined by submission_id); ordered by comment creation time, then id.
-# OUTPUT: similarity_table.
+# One row per eligible comment, ordered by creation time then id.
 similarity_table <- eligible |>
   left_join(modeled |> select(submission_id, submission_author, submission_created_utc,
                               title_n_tokens, full_n_tokens),
@@ -336,11 +272,8 @@ similarity_long <- similarity_table |>
   filter(!is.na(cosine))
 
 # ---- Summary measurements ----
-# INPUT : population counts; vocabulary counts; similarity_long.
-# DOES  : population reconciliation, document and vocabulary counts, valid /
-#         undefined / zero-vector counts, exact-zero similarity, quantiles
-#         (type 7), mean, min, max per representation.
-# OUTPUT: similarity_summary (long table: representation, measure, value).
+# Population counts, valid/undefined counts, exact zeros, quantiles (type 7), mean,
+# min and max per representation.
 similarity_stats <- function(cosine, representation) {
   valid <- cosine[!is.na(cosine)]
   tibble(representation = representation,
@@ -379,15 +312,8 @@ similarity_summary <- bind_rows(
   select(representation, measure, value)
 
 # ---- Representative pairs ----
-# INPUT : similarity_long; similarity_table; eligible; modeled.
-# DOES  : per representation, positions on the distribution of valid non-zero
-#         cosines: very low = p05, lower-middle = p25, middle = p50,
-#         upper-middle = p75, very high = p95 (type-7 quantiles). For each
-#         position keep the 3 comments whose cosine is nearest the target,
-#         ties broken by comment id (ascending). A sixth position, "zero (no
-#         shared term)", takes the 3 exactly-zero comments with the lowest ids.
-#         Attach texts, authors, timestamps.
-# OUTPUT: representative_pairs.
+# For p05, p25, p50, p75 and p95 of the non-zero cosines, the 3 comments nearest
+# each target (ties by id), plus 3 exact-zero comments with the lowest ids.
 position_probs     <- c("very low" = 0.05, "lower-middle" = 0.25, "middle" = 0.50,
                         "upper-middle" = 0.75, "very high" = 0.95)
 position_levels    <- c(names(position_probs), "zero (no shared term)")
@@ -430,13 +356,7 @@ representative_pairs <- bind_rows(selected_positions, selected_zero) |>
          comment_n_tokens)
 
 # ---- Shared weighted terms for the representative pairs ----
-# INPUT : representative_pairs; tf_comment, tf_title, tf_full; term_idf.
-# DOES  : for each selected pair, the terms present in both the comment and
-#         the submission text used; contribution = (comment count x idf) x
-#         (submission count x idf), which sums to the pair's dot product;
-#         share = contribution / dot product. Keep the 10 largest
-#         contributions per pair (ties by term).
-# OUTPUT: shared_weighted_terms.
+# Per-term contribution to each pair's dot product; the 10 largest per pair are kept.
 shared_weighted_terms <- lapply(seq_len(nrow(representative_pairs)), function(k) {
   i <- match(representative_pairs$comment_id[k],    eligible$comment_id)
   s <- match(representative_pairs$submission_id[k], modeled$submission_id)
@@ -467,10 +387,6 @@ shared_weighted_terms <- lapply(seq_len(nrow(representative_pairs)), function(k)
   arrange(representation, position, comment_id, desc(contribution), term)
 
 # ---- Similarity by comment length ----
-# INPUT : similarity_long (comment_n_tokens, cosine).
-# DOES  : fixed token-count bands; per band and representation: comments,
-#         share exactly zero, quantiles (type 7), mean.
-# OUTPUT: similarity_by_comment_length_bands.
 length_breaks <- c(0, 1, 2, 5, 10, 20, 50, 100, 200, Inf)
 length_labels <- c("1", "2", "3-5", "6-10", "11-20", "21-50", "51-100", "101-200", "201+")
 
@@ -489,15 +405,8 @@ similarity_by_comment_length_bands <- similarity_long |>
             .groups = "drop")
 
 # ---- Figure data: bins and grids ----
-# INPUT : similarity_long; similarity_table.
-# DOES  : cosine bins: exactly 0 is its own bin, then 50 bins of width 0.02,
-#         right-closed, on (0, 1]; values above 1 by floating-point noise
-#         (checked below to be within 1e-12) go to the top bin. (1) counts per
-#         cosine bin; (2) ECDF evaluated on a grid from 0 to 1 in steps of
-#         0.001; (3) 2-D counts, title bin x title+selftext bin, for comments
-#         valid under both; (4) 2-D counts, comment-length bin x cosine bin,
-#         with integer-aligned length edges unique(round(10^seq(...))) - 0.5.
-# OUTPUT: histogram_bins; ecdf_grid; comparison_bins; length_bins.
+# Exact 0 is its own bin, then 50 right-closed bins of 0.02 on (0, 1]; values just
+# above 1 from floating-point noise go in the top bin. Length edges are integer-aligned.
 cosine_bin <- function(x) if_else(x == 0, 0L, pmin(as.integer(ceiling(x / 0.02)), 50L))
 
 histogram_bins <- similarity_long |>
@@ -542,11 +451,7 @@ length_bins <- similarity_long |>
   arrange(representation, x_bin, y_bin)
 
 # ---- Figures ----
-# INPUT : histogram_bins; ecdf_grid; comparison_bins; length_bins.
-# DOES  : four PNG figures with a title, axis titles, tick labels, and a legend
-#         where more than one series or a colour scale is shown. Counts on
-#         log10 colour/y scales are stated in the axis or legend title.
-# OUTPUT: figures/fig1 ... fig4 PNG files.
+# Four PNGs; log10 count scales are noted in the axis or legend title.
 ink_series   <- "#2a78d6"
 ink_series_2 <- "#eb6834"
 ink_text     <- "#0b0b0b"
@@ -569,7 +474,7 @@ theme_fig <- theme_minimal(base_size = 12) +
         legend.text      = element_text(colour = ink_muted),
         plot.background  = element_rect(fill = "white", colour = NA))
 
-# Figure 1 — distribution of cosine similarity, one panel per representation.
+# Figure 1: distribution of cosine similarity, one panel per representation.
 fig1 <- histogram_bins |>
   filter(n > 0) |>
   mutate(representation = representation_labels[representation]) |>
@@ -585,7 +490,7 @@ fig1 <- histogram_bins |>
 ggsave(file.path(fig_dir, "fig1_similarity_distribution.png"), fig1,
        width = 10, height = 7, dpi = 150, bg = "white")
 
-# Figure 2 — empirical cumulative distribution, both representations.
+# Figure 2: empirical cumulative distribution, both representations.
 fig2 <- ecdf_grid |>
   mutate(representation = representation_labels[representation]) |>
   ggplot(aes(cosine_threshold, cumulative_share, colour = representation, linetype = representation)) +
@@ -604,7 +509,7 @@ fig2 <- ecdf_grid |>
 ggsave(file.path(fig_dir, "fig2_similarity_ecdf.png"), fig2,
        width = 9, height = 6, dpi = 150, bg = "white")
 
-# Figure 3 — title-only vs title + selftext similarity, 2-D bin counts.
+# Figure 3: title-only vs title + selftext similarity, 2-D bin counts.
 fig3 <- ggplot(comparison_bins) +
   geom_rect(aes(xmin = x_left, xmax = x_right, ymin = y_low, ymax = y_high, fill = n)) +
   geom_abline(slope = 1, intercept = 0, linetype = "dashed", colour = ref_col) +
@@ -620,7 +525,7 @@ fig3 <- ggplot(comparison_bins) +
 ggsave(file.path(fig_dir, "fig3_representation_comparison.png"), fig3,
        width = 8, height = 7.5, dpi = 150, bg = "white")
 
-# Figure 4 — comment length vs similarity, 2-D bin counts, one panel per representation.
+# Figure 4: comment length vs similarity, 2-D bin counts, one panel per representation.
 fig4 <- length_bins |>
   mutate(representation = representation_labels[representation]) |>
   ggplot() +
@@ -639,12 +544,8 @@ ggsave(file.path(fig_dir, "fig4_similarity_vs_comment_length.png"), fig4,
        width = 11, height = 6.5, dpi = 150, bg = "white")
 
 # ---- Validation checks ----
-# INPUT : the objects above.
-# DOES  : recompute key quantities by a second route (token tables instead of
-#         the sparse matrices; id lookups instead of row positions) on
-#         deterministic samples, reconcile every population count, confirm ids
-#         and metadata stayed attached, and stop if any check fails.
-# OUTPUT: validation_checks (one row per check).
+# Recompute key quantities a second way on fixed samples, reconcile counts, and
+# stop on any failure.
 sample_docs  <- seq(1, n_eligible, by = 10000)   # every 10,000th eligible comment (source order)
 sample_pairs <- seq(1, n_eligible, by = 1000)    # every 1,000th eligible comment (source order)
 
@@ -804,9 +705,6 @@ print(as.data.frame(validation_checks[, c("check", "pass")]), right = FALSE)
 stopifnot(all(validation_checks$pass))
 
 # ---- Write tables ----
-# INPUT : the measurement objects above.
-# DOES  : write one CSV per table.
-# OUTPUT: CSV files under tables/.
 write_csv(similarity_table,                   file.path(tab_dir, "comment_submission_similarity.csv"))
 write_csv(similarity_summary,                 file.path(tab_dir, "similarity_summary.csv"))
 write_csv(text_availability,                  file.path(tab_dir, "text_availability.csv"))
@@ -822,10 +720,8 @@ write_csv(length_bins,                        file.path(tab_dir, "similarity_by_
 write_csv(validation_checks,                  file.path(tab_dir, "validation_checks.csv"))
 
 # ---- Write provenance sidecars ----
-# INPUT : the CSV and PNG outputs; the 8 source Parquet files.
-# DOES  : write one <output>.manifest.yml per output recording input/output
-#         SHA256 hashes, this script's hash, git commit, and package versions.
-# OUTPUT: *.manifest.yml sidecars next to each output.
+# One <output>.manifest.yml per output: input/output SHA256, script hash,
+# git commit and package versions.
 sha256 <- function(path) paste0("sha256:", digest(path, algo = "sha256", file = TRUE))
 
 git_commit <- tryCatch(
@@ -881,10 +777,6 @@ invisible(lapply(list.files(tab_dir, pattern = "\\.csv$", full.names = TRUE), wr
 invisible(lapply(list.files(fig_dir, pattern = "\\.png$", full.names = TRUE), write_sidecar))
 
 # ---- Console summary ----
-# INPUT : similarity_summary; text_availability; tokenization_report;
-#         representative_pairs; similarity_by_comment_length_bands.
-# DOES  : print the headline tables.
-# OUTPUT: console text.
 print(as.data.frame(text_availability))
 print(as.data.frame(tokenization_report))
 print(as.data.frame(similarity_summary))

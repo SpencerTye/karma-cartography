@@ -1,26 +1,10 @@
 #!/usr/bin/env bash
-# Builds the WSL2 (Ubuntu-24.04) Python environment used by the Phase 2 feasibility test
-# and downloads the two models at the pinned revisions.
-#
-# Run from inside WSL2 (or from Windows: wsl -d Ubuntu-24.04 -- bash -lc "bash '<this file as /mnt/<drive>/...>'"):
-#   bash "$REPO/pipeline/phase2_semantic_embeddings/feasibility_qwen3_embedding_worst_case/scripts/setup_wsl2_env.sh"
-#
-# Environment variables (all optional):
-#   PHASE2_VENV   venv location inside the WSL2 file system (default: ~/venvs/socialmediadgg-phase2)
-#   HF_HOME       Hugging Face cache (default: ~/.cache/huggingface inside WSL2; the Windows cache on F: is 95% full)
-#
-# Disk space warning. Everything below (about 4 GB of libraries and 23 GB of model weights) is written
-# into the distro's virtual disk (ext4.vhdx). Its location on the Windows side is the BasePath value
-# under HKCU\Software\Microsoft\Windows\CurrentVersion\Lxss\<guid>; that Windows drive needs at least
-# 30 GB free. The guest's own `df /` reports the virtual disk's nominal size (1 TB), not the host's
-# free space. On 2026-09-09 the disk filled C: and the distro went read-only; it was moved with
-# `wsl --manage Ubuntu-24.04 --move S:\wsl\Ubuntu-24.04` and the download resumed.
-#
-# Pinned versions (see ../README.md for why):
-#   torch 2.8.0 (PyPI Linux wheel, CUDA 12.8), flash-attn 2.8.3.post1 (official prebuilt wheel for
-#   torch 2.8 / CUDA 12 / CPython 3.12), transformers, accelerate, safetensors, huggingface_hub,
-#   sentence-transformers (installed only so that its source can be inspected), pyarrow, numpy,
-#   psutil, nvidia-ml-py, pyyaml.
+# Builds the WSL2 (Ubuntu-24.04) Python venv for the Phase 2 feasibility test and downloads both
+# models at their pinned revisions. Pinned: torch 2.8.0 (CUDA 12.8), flash-attn 2.8.3.post1; see ../README.md.
+# Run inside WSL2: bash "$REPO/pipeline/phase2_semantic_embeddings/feasibility_qwen3_embedding_worst_case/scripts/setup_wsl2_env.sh"
+# Env (optional): PHASE2_VENV (default ~/venvs/socialmediadgg-phase2), HF_HOME (default ~/.cache/huggingface).
+# Needs about 30 GB free on the Windows drive that holds the distro's ext4.vhdx (4 GB libraries,
+# 23 GB weights); df / inside WSL2 does not show the host's free space.
 set -euo pipefail
 
 VENV="${PHASE2_VENV:-$HOME/venvs/socialmediadgg-phase2}"

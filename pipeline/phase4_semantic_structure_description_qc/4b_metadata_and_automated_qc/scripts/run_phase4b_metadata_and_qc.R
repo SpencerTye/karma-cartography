@@ -1,29 +1,10 @@
 #!/usr/bin/env Rscript
-# =====================================================================================
-# Phase 4B: metadata description and automated QC
-# =====================================================================================
-# Descriptive / QC measurements ONLY for the 5,167 assigned full-corpus HDBSCAN semantic
-# clusters (Phase 3), reconnected to the canonical Reddit records (Phase 1) and to the
-# Phase 2 embeddings and the Phase 4A c-TF-IDF descriptors. This script measures:
-#   1. author participation and concentration          6. direct-parent / reply context
-#   2. temporal distribution                           7. combined one-row-per-cluster summary
-#   3. thread distribution                             8. topic diversity (from 4A c-TF-IDF)
-#   4. subreddit distribution                          9. within-cluster semantic similarity
-#   5. observed canonical URL / domain distribution   10. TC-W2V coherence -> resource check only
-#
-# It does NOT interpret, name, score, or relabel any cluster; it does NOT infer coordination,
-# suspiciousness, mobilization, disinformation, or importance; it does NOT re-run Phase 4A,
-# embeddings, UMAP, or HDBSCAN, and it does NOT modify any source artifact. Only the 457,880
-# assigned documents are summarised; the 444,264 unassigned ("label -1") documents are left
-# untouched in the source and not summarised here.
-#
-# All filtering, joining, aggregation, feature construction, and QC math is explicit below.
-# Fully deterministic: no random operations; every rank tie is broken by an explicit key.
-#
-# Usage:
-#   Rscript run_phase4b_metadata_and_qc.R           # FULL run
-#   Rscript run_phase4b_metadata_and_qc.R --quick   # smoke run over a few clusters
-# =====================================================================================
+# Phase 4B: metadata description and automated QC for the 5,167 assigned HDBSCAN clusters.
+# Per cluster: authors, time span, threads, subreddits, URLs/domains, direct-parent context,
+# topic diversity (from the 4A c-TF-IDF descriptors) and within-cluster cosine similarity.
+# Inputs: Phase 1 message_events, Phase 2 embeddings and index, Phase 3 labels, Phase 4A outputs.
+# Outputs: derived/*.parquet and figures/*.png. Descriptive only; noise (label -1) is excluded.
+# Usage: Rscript run_phase4b_metadata_and_qc.R [--quick]   Env: KC_REPO_ROOT (default: working directory).
 
 suppressWarnings(suppressMessages({
   library(nanoparquet)
@@ -41,7 +22,7 @@ data.table::setDTthreads(0L)
 QUICK <- any(commandArgs(trailingOnly = TRUE) == "--quick")
 cat("MODE:", if (QUICK) "QUICK (smoke)" else "FULL", "\n")
 
-# ---- paths (inputs are READ-ONLY) -----------------------------------------------------
+# ---- paths (inputs are read only) ------------------------------------------------------
 BASE <- Sys.getenv("KC_REPO_ROOT", unset = getwd())
 PIPE <- file.path(BASE, "pipeline")
 P1_ME  <- file.path(PIPE, "phase1_message_event_foundation/derived/message_events.parquet")
@@ -57,7 +38,7 @@ D_FIG <- file.path(OUT, "figures")
 dir.create(D_DER, recursive = TRUE, showWarnings = FALSE)
 dir.create(D_FIG, recursive = TRUE, showWarnings = FALSE)
 
-# ---- expected Phase 3 / 4A measurements (consistency checks, NOT re-validation) -------
+# ---- expected Phase 3 / 4A measurements (consistency checks, not re-validation) -------
 EXP_TOTAL    <- 902144L
 EXP_CLUSTERS <- 5167L
 EXP_ASSIGNED <- 457880L
@@ -189,7 +170,7 @@ setorder(cl_n, cluster_id)
 stopifnot(cl_n$n_docs == cl_n$n_comments + cl_n$n_submissions, sum(cl_n$n_docs) == nrow(ad))
 
 # =====================================================================================
-# SECTION 4. AUTHOR description (participation + concentration).
+# SECTION 4. Author description (participation + concentration).
 # =====================================================================================
 cluster_authors <- ad[, .(doc_count = .N), by = .(cluster_id = cluster, author)]
 cluster_authors <- add_rank(cluster_authors, "author")
@@ -214,7 +195,7 @@ write_pq(cluster_author_summary, "cluster_author_summary.parquet")
 write_pq(cluster_authors,        "cluster_authors.parquet")
 
 # =====================================================================================
-# SECTION 5. TEMPORAL description.
+# SECTION 5. Temporal description.
 # =====================================================================================
 cluster_days <- ad[, .(doc_count = .N), by = .(cluster_id = cluster, date_utc = day_utc)]
 setorder(cluster_days, cluster_id, date_utc)
@@ -236,7 +217,7 @@ write_pq(cluster_temporal_summary, "cluster_temporal_summary.parquet")
 write_pq(cluster_days,             "cluster_days.parquet")
 
 # =====================================================================================
-# SECTION 6. THREAD description.
+# SECTION 6. Thread description.
 # =====================================================================================
 cluster_threads <- ad[, .(doc_count = .N), by = .(cluster_id = cluster, thread_id)]
 cluster_threads <- add_rank(cluster_threads, "thread_id")
@@ -258,7 +239,7 @@ write_pq(cluster_thread_summary, "cluster_thread_summary.parquet")
 write_pq(cluster_threads,        "cluster_threads.parquet")
 
 # =====================================================================================
-# SECTION 7. SUBREDDIT description.
+# SECTION 7. Subreddit description.
 # =====================================================================================
 cluster_subreddits <- ad[, .(doc_count = .N), by = .(cluster_id = cluster, subreddit)]
 cluster_subreddits <- add_rank(cluster_subreddits, "subreddit")
@@ -280,7 +261,7 @@ write_pq(cluster_subreddit_summary, "cluster_subreddit_summary.parquet")
 write_pq(cluster_subreddits,        "cluster_subreddits.parquet")
 
 # =====================================================================================
-# SECTION 8. URL and DOMAIN description (observed canonical Phase 1 `url`).
+# SECTION 8. URL and domain description (observed canonical Phase 1 `url`).
 #   `url` is populated for submissions only; comments have NA. "Observed URL" = non-missing
 #   and non-empty (after trim). The exact observed URL is preserved; the domain is the
 #   reproducibly-derived host (url_host()).
@@ -290,7 +271,7 @@ ad[, url_host := ifelse(has_url, url_host(url), NA_character_)]
 # any observed URL that failed host extraction (QC transparency)
 n_url_no_host <- ad[has_url & is.na(url_host), .N]
 
-# cluster URL summary over ALL clusters (zero-URL clusters included, with zeros)
+# cluster URL summary over all clusters (zero-URL clusters included, with zeros)
 cluster_url_summary <- ad[, .(
   n_docs               = .N,
   n_url_docs           = sum(has_url),
@@ -333,7 +314,7 @@ if (nrow(cluster_domains)) {
 write_pq(cluster_domains, "cluster_domains.parquet")
 
 # =====================================================================================
-# SECTION 9. DIRECT-PARENT / reply-context description (COMMENTS only).
+# SECTION 9. Direct-parent / reply-context description (comments only).
 #   Every comment has a non-missing parent_id and parent_kind. parent_in_dataset marks
 #   whether that parent_id exists as a doc_key in the canonical corpus. We resolve a
 #   canonical parent_doc_key by matching parent_id against me$doc_key (NA when absent) and
@@ -387,9 +368,9 @@ setorder(cluster_parent_summary, cluster_id)
 write_pq(cluster_parent_summary, "cluster_parent_summary.parquet")
 
 # =====================================================================================
-# SECTION 10. TOPIC DIVERSITY QC (from the existing Phase 4A c-TF-IDF descriptors). [sec 8]
+# SECTION 10. Topic diversity QC (from the existing Phase 4A c-TF-IDF descriptors). [sec 8]
 #   topic_diversity = (# unique descriptor strings present) / (# descriptor rows present)
-#   over ctfidf_top_terms.parquet, WITHOUT removing repeats before the denominator. Absent
+#   over ctfidf_top_terms.parquet, without removing repeats before the denominator. Absent
 #   descriptors (clusters with <10 or 0 rows) are simply not present -- not treated as dups.
 # =====================================================================================
 ct <- as.data.table(nanoparquet::read_parquet(P4A_CT))
@@ -404,7 +385,7 @@ desc_per_cluster <- ct[, .(k = .N), by = cluster_id]                 # clusters 
 n_desc_clusters_any <- nrow(desc_per_cluster)
 n_desc_eq10  <- desc_per_cluster[k == 10L, .N]
 n_desc_1to9  <- desc_per_cluster[k >= 1L & k <= 9L, .N]
-n_desc_zero  <- n_ad_clusters - n_desc_clusters_any                 # clusters with NO rows at all
+n_desc_zero  <- n_ad_clusters - n_desc_clusters_any                 # clusters with no rows at all
 
 topic_diversity_qc <- data.table(
   total_descriptor_rows     = total_descriptor_rows,
@@ -418,7 +399,7 @@ topic_diversity_qc <- data.table(
 )
 write_pq(topic_diversity_qc, "topic_diversity_qc.parquet")
 
-# how often each descriptor string recurs ACROSS different clusters (term appears once per
+# how often each descriptor string recurs across different clusters (term appears once per
 # cluster, so n_clusters == number of distinct clusters containing it)
 descriptor_recurrence <- ct[, .(n_clusters = uniqueN(cluster_id)), by = term]
 setorder(descriptor_recurrence, -n_clusters, term)
@@ -426,7 +407,7 @@ write_pq(descriptor_recurrence, "descriptor_recurrence.parquet")
 recurrence_dist <- descriptor_recurrence[, .(n_terms = .N), by = n_clusters][order(n_clusters)]
 
 # =====================================================================================
-# SECTION 11. WITHIN-CLUSTER semantic-similarity QC (original 1024-d L2-normalized emb). [sec 9]
+# SECTION 11. Within-cluster semantic-similarity QC (original 1024-d L2-normalized emb). [sec 9]
 #   For cluster size n and vector sum s:  mean_pairwise_cosine = (||s||^2 - n) / (n*(n-1)),
 #   exact for n>1 (all clusters have n>=10). No UMAP coordinates are used.
 # =====================================================================================
@@ -509,7 +490,7 @@ wcs <- within_cluster_similarity$mean_pairwise_cosine
 sim_summary <- data.table(
   metric = "mean_pairwise_cosine_within_cluster",
   n_clusters = length(wcs),
-  unweighted_mean_across_clusters = mean(wcs),   # PRIMARY headline (each cluster counts once)
+  unweighted_mean_across_clusters = mean(wcs),   # primary headline (each cluster counts once)
   median = median(wcs),
   p25 = quantile(wcs, 0.25, names = FALSE, type = 7),
   p75 = quantile(wcs, 0.75, names = FALSE, type = 7),
@@ -518,7 +499,7 @@ sim_summary <- data.table(
 write_pq(sim_summary, "within_cluster_similarity_summary.parquet")
 
 # =====================================================================================
-# SECTION 12. COMBINED one-row-per-cluster metadata summary.
+# SECTION 12. Combined one-row-per-cluster metadata summary.
 #   Join of the principal descriptive measurements from sections 4-9 plus the topic-QC
 #   descriptor count and the within-cluster cosine. No composite / coordination score.
 # =====================================================================================
@@ -662,5 +643,5 @@ print(sim_summary)
 cat("\n-- TC-W2V coherence --\n")
 cat("No explicitly documented Word2Vec coherence model/resource found in this project (repo-wide\n",
     "search for word2vec/w2v/gensim/glove/O'Callaghan/coherence returned nothing). TC-W2V coherence\n",
-    "is therefore PENDING an analyst choice of reference Word2Vec resource and was NOT computed.\n", sep="")
+    "is therefore pending an analyst choice of reference Word2Vec resource and was not computed.\n", sep="")
 cat("\n===== DONE =====\n")
