@@ -1,0 +1,48 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  python:
+    name: Python unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install test dependencies (CPU only)
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Run tests
+        run: |
+          set -e
+          for t in $(find pipeline -path '*/tests/*' -name 'test_*.py' | sort); do
+            echo "::group::$t"
+            python "$t"
+            echo "::endgroup::"
+          done
+
+  r:
+    name: R unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: "4.5"
+          use-public-rspm: true
+      - name: Install test dependencies
+        run: Rscript -e 'install.packages(c("dplyr", "tidyr", "tibble", "stringi"))'
+      - name: Run tests
+        run: |
+          set -e
+          for t in pipeline/phase1_message_event_foundation/tests/test_phase1_functions.R legacy/tests/*.R; do
+            echo "::group::$t"
+            Rscript "$t"
+            echo "::endgroup::"
+          done
