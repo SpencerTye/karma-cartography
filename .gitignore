@@ -1,0 +1,35 @@
+# Data, outputs and model files never go in the repository.
+data_sample/
+r_analysis_outputs/
+analysis_outputs/
+**/derived/
+**/results/
+**/qc/
+**/figures/
+**/environment/*.log
+**/review_package/
+**/planning/
+*.parquet
+*.npy
+*.npz
+*.csv
+*.rds
+*.jsonl
+*.safetensors
+*.manifest.yml
+
+# Build and tool caches
+__pycache__/
+*.pyc
+.ruff_cache/
+.pytest_cache/
+*.so
+.Rhistory
+.RData
+.Rproj.user/
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,14 @@
+# Phase 2: embeddings, benchmarks and feasibility tests (Python 3.12, WSL2 Ubuntu 24.04, CUDA 12).
+# Embedding itself is served by the Text Embeddings Inference container:
+#   ghcr.io/huggingface/text-embeddings-inference:86-1.9.3
+numpy>=2.4
+pyarrow>=23
+httpx
+psutil
+nvidia-ml-py
+pyyaml
+huggingface_hub
+torch>=2.4,<2.9
+transformers==5.17.0
+tokenizers==0.23.2
+# flash-attn 2.8.3.post1 (prebuilt Linux wheel) is used by the worst-case feasibility test

@@ -1,0 +1,3 @@
+# Everything the unit tests need (CPU only; no GPU, data or models required).
+numpy>=2.4
+torch>=2.4
