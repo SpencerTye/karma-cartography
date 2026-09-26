@@ -1,88 +1,89 @@
 # Methods and results
 
-A condensed record of what each stage did and what it measured. All numbers below come from
-the runs' own reports; nothing is estimated unless marked. Data: every submission and
-comment posted to `r/politics` in July 2026 (UTC), from publicly available Reddit data.
-Hardware: one NVIDIA RTX 3090 (24 GiB) under WSL2 Ubuntu 24.04.
+What each phase did and what it measured. The numbers come from the reports each run wrote.
+The data are every submission and comment posted to `r/politics` in July 2026 (UTC), from
+publicly available Reddit data. Everything ran on one NVIDIA RTX 3090 (24 GiB) under WSL2
+Ubuntu 24.04.
 
-## Phase 1: message-event foundation (R)
+## Phase 1: message-event table (R)
 
-`pipeline/phase1_message_event_foundation/`
+Folder: `pipeline/phase1_message_event_foundation/`
 
-- Combines 7 comment files (891,397 rows) and 1 submission file (10,747 rows) into one
-  canonical table: **902,144 rows, 29 columns**, one row per message.
-- Adds a stable key (`doc_key`, the Reddit fullname), explicit thread and parent links with
-  flags for whether the referenced message is present, and row-level provenance.
-- Removes, filters and rewrites nothing. The source files are hashed before and after the
-  run to prove they were only read.
-- Every field is documented in [`DATA_DICTIONARY.md`](DATA_DICTIONARY.md).
+The script combines 7 comment files (891,397 rows) and 1 submission file (10,747 rows) into
+one table with 902,144 rows and 29 columns, one row per message. It adds a key for each
+message (`doc_key`, the Reddit fullname), links each comment to its thread and parent with
+flags for whether those are in the data set, and records the source file and row of each
+message. No rows are removed or filtered, and the text is left as it is. The source files are
+hashed before and after the run to confirm they were not changed. Every column is described
+in [`DATA_DICTIONARY.md`](DATA_DICTIONARY.md).
 
-## Phase 2: semantic embeddings (Python)
+## Phase 2: embeddings (Python)
 
-`pipeline/phase2_semantic_embeddings/`
+Folder: `pipeline/phase2_semantic_embeddings/`
 
-Before the full run, four smaller studies settled the model, the batch size and the memory
-limits on a fixed 21 GiB GPU budget:
+Four smaller studies came before the full run, all with a 21 GiB limit on GPU memory:
 
 | Study | Question | Result |
 |---|---|---|
-| `feasibility_qwen3_embedding_worst_case` | Can Qwen3-Embedding-4B and 8B embed the longest documents (up to 5,823 tokens) within budget? | Both handled the longest single document and a batch of the three longest; on the largest batch (eight documents) the 4B fit and the 8B ran out of memory. The two tokenizers are byte-identical, so one token count serves both |
-| `feasibility_tei_qwen3_4b_batch_tokens` | Largest safe `max_batch_tokens` for the 4B model in Text Embeddings Inference | **92,160** (peak 20.8 GiB; the next value up, 92,672, went over). Enforced with `vram_cap`, below |
-| `benchmark_qwen3_4b_0p6b_throughput` | GPU vs CPU speed on the same three documents | 0.6B model: **GPU 88.6× faster** than CPU (11,925 vs 135 tokens/s) |
-| `faiss_gpu_exact_search_benchmark` | Is exact (brute-force) nearest-neighbour search practical? | Index built in 1.3 s; exact search of all 902,144 documents projected at **~1.5 min**; exactness verified independently |
+| `feasibility_qwen3_embedding_worst_case` | Can Qwen3-Embedding-4B and 8B embed the longest documents (up to 5,823 tokens)? | Both handled the longest document and a batch of the three longest. On a batch of the eight longest, the 4B fit and the 8B ran out of memory. The two models' tokenizers are identical, so one token count works for both. |
+| `feasibility_tei_qwen3_4b_batch_tokens` | Largest `max_batch_tokens` for the 4B model in Text Embeddings Inference | 92,160 tokens (peak 20.8 GiB). The next value tested, 92,672, went over the limit. |
+| `benchmark_qwen3_4b_0p6b_throughput` | GPU vs CPU speed on the same three documents | For the 0.6B model the GPU was 88.6 times faster (11,925 vs 135 tokens/s). |
+| `faiss_gpu_exact_search_benchmark` | How long does exact nearest-neighbor search take? | 1.3 s to build the index; about 1.5 minutes projected to search all 902,144 documents. |
 
-**`vram_cap`** (`feasibility_tei_qwen3_4b_batch_tokens/scripts/vram_cap/`): Text Embeddings
-Inference has no setting to cap its GPU memory. `vram_cap.c` is a drop-in replacement for
-the CUDA driver library that forwards every call to the real driver but refuses
-allocations that would push the process past a set limit, the same guarantee PyTorch gives
-with `set_per_process_memory_fraction`. `gen_trampolines.py` generates forwarding stubs for
-every other driver function.
+Text Embeddings Inference has no setting to limit its GPU memory, so the batch-size study
+used `vram_cap` (`feasibility_tei_qwen3_4b_batch_tokens/scripts/vram_cap/`). `vram_cap.c` is
+loaded in place of the CUDA driver library. It passes every call through to the real driver
+and refuses any allocation that would take the process past a set limit, which is what
+PyTorch's `set_per_process_memory_fraction` does for PyTorch programs.
+`gen_trampolines.py` generates the pass-through functions for the rest of the driver.
 
-**Full-corpus run** (`full_corpus_embedding_0p6b`), after a three-day trial run:
+After a trial run on three days of data, the full run (`full_corpus_embedding_0p6b`) used
+Qwen3-Embedding-0.6B in float16 with last-token pooling, L2 normalization and no
+truncation. It embedded 902,144 documents (35,388,381 tokens) in 15 minutes, about 38,250
+tokens per second, with a peak of 18.4 GiB of GPU memory. The run checks that every
+`doc_key` has exactly one finite 1,024-dimension embedding and that the token total matches
+the token count table. One message is empty; it was embedded from a single space because the
+server rejects empty input, and the report records this.
 
-- Qwen3-Embedding-0.6B, float16, last-token pooling, L2-normalised, no truncation.
-- **902,144 documents / 35,388,381 tokens in 15 minutes** (38,250 tokens/s end to end),
-  peak GPU memory 18.4 GiB.
-- Verified: one finite 1,024-dimension embedding per `doc_key`, no missing or extra keys,
-  token totals reconciled to the token count table (the single empty document is
-  embedded from a one-space placeholder, and that is recorded).
+## Phase 3: clustering (Python)
 
-## Phase 3: structure discovery (Python, GPU)
+Folder: `pipeline/phase3_blind_semantic_structure_discovery/`
 
-`pipeline/phase3_blind_semantic_structure_discovery/`
+UMAP reduces the embeddings from 1,024 to 5 dimensions (cosine distance), and HDBSCAN
+clusters the result, both on the GPU with RAPIDS cuML. A separate 2-D UMAP is used only for
+plots. On the full corpus the three fits took 121 seconds together, with a peak of 4.9 GiB
+of GPU memory. HDBSCAN found 5,167 clusters. 457,880 documents (50.8%) were assigned to a
+cluster and 444,264 were left as noise. The median cluster has 26 documents and the largest
+has 24,862.
 
-- RAPIDS cuML UMAP (1,024 → 5 dimensions, cosine) followed by HDBSCAN on the GPU, plus a
-  separate 2-D UMAP for visualisation only.
-- **All three fits in 121 s** on the full corpus, peak GPU memory 4.9 GiB.
-- **5,167 clusters**; 457,880 documents (50.8%) assigned, 444,264 left as noise. Cluster
-  size: median 26, largest 24,862.
-- A trial run on three days (101,722 documents) and a sensitivity/stability study came first.
-- Verified: row alignment with `doc_key` preserved end to end, every coordinate finite, the
-  input embeddings unchanged (hashes before and after).
-- Clusters are measured, not named or interpreted, at this stage.
+A trial on three days of data (101,722 documents) and a parameter sensitivity and stability
+study were run first. The run checks that every output row still lines up with its
+`doc_key`, that all coordinates are finite, and that the input embeddings were not changed.
+The clusters are not named or interpreted in this phase.
 
 ![2-D UMAP of all 902,144 documents](images/umap_density.png)
 
-## Phase 4: describing the clusters (R)
+## Phase 4: cluster description (R)
 
-`pipeline/phase4_semantic_structure_description_qc/`
+Folder: `pipeline/phase4_semantic_structure_description_qc/`
 
-- **4a:** reconnects every cluster to the original messages; computes c-TF-IDF keywords
-  per cluster and picks representative documents (nearest the cluster centroid, and
+- 4a links each cluster back to its messages, computes c-TF-IDF keywords for each cluster,
+  and picks representative messages (those nearest the cluster centroid and those with the
   highest membership probability), with the parent comment for context.
-- **4b:** per-cluster metadata (authors, timing, threads, links, reply context) and
-  automated quality checks. Fully deterministic, with explicit tie-breaks.
-- **4c:** selects a sample of clusters (the largest plus a random set) and builds a
-  package for manual review. The manual review itself is the next step.
+- 4b summarizes each cluster's authors, timing, threads, links and reply context, and runs
+  automated quality checks. There is no randomness, and ties are broken by fixed rules.
+- 4c picks a sample of clusters (the largest plus a random set) and builds a package for
+  each one for manual review. The manual review is the next step.
 
-Nothing in Phases 1 to 4 infers coordination, disinformation or intent. Those questions
-come after the clusters are described and checked by hand.
+Phases 1 to 4 do not try to detect coordination or disinformation. That comes after the
+clusters have been described and checked by hand.
 
-## Reproducibility practices used throughout
+## Reproducibility
 
-- Inputs are read-only and hashed before and after every run.
-- Every output gets a `.manifest.yml` sidecar: input and output hashes, script hash,
-  parameters, git commit and package versions.
-- Fixed seeds where randomness is used (and recorded where it is not, e.g. unseeded UMAP).
-- Each script records its wall-clock time and peak memory.
-- Pure functions are unit-tested separately from the pipeline run.
+- Input files are only read, and they are hashed before and after each run.
+- Each output has a `.manifest.yml` file next to it with the input and output hashes, the
+  script's hash, the parameters, the git commit and the package versions.
+- Random seeds are fixed where randomness is used. UMAP is left unseeded on purpose, and that
+  is recorded.
+- Each script records how long it ran and its peak memory.
+- The functions each script uses are unit-tested separately from the full run.

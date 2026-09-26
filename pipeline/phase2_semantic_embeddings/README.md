@@ -1,16 +1,16 @@
-# Phase 2: semantic embeddings
+# Phase 2: embeddings
 
-Every message is embedded with Qwen3-Embedding-0.6B (1,024 dimensions, L2-normalised),
-served by Hugging Face Text Embeddings Inference on the GPU. The folders run in this order:
+Each message is embedded with Qwen3-Embedding-0.6B (1,024 dimensions, L2-normalized) using
+Hugging Face Text Embeddings Inference on the GPU. The folders, in the order they were run:
 
-| Folder | Purpose |
+| Folder | What it does |
 |---|---|
-| `feasibility_qwen3_embedding_worst_case/` | Do the 4B and 8B models fit the longest documents in a 21 GiB budget? |
-| `feasibility_tei_qwen3_4b_batch_tokens/` | Largest safe batch size in TEI, enforced with the `vram_cap` library in `scripts/vram_cap/` |
-| `benchmark_qwen3_4b_0p6b_throughput/` | GPU vs CPU speed, 0.6B vs 4B; holds the shared helpers (`throughput_benchmark.py`) |
+| `feasibility_qwen3_embedding_worst_case/` | Tests whether the 4B and 8B models fit the longest documents in 21 GiB of GPU memory |
+| `feasibility_tei_qwen3_4b_batch_tokens/` | Finds the largest batch size that stays under the limit, using the `vram_cap` library in `scripts/vram_cap/` |
+| `benchmark_qwen3_4b_0p6b_throughput/` | Compares GPU and CPU speed for the 0.6B and 4B models; `throughput_benchmark.py` here also holds helper functions the embedding runs use |
 | `three_day_embedding_0p6b/` | Trial run on three days of data |
-| `full_corpus_embedding_0p6b/` | The production run: all 902,144 messages |
-| `faiss_gpu_exact_search_benchmark/` | Speed of exact nearest-neighbour search over the result |
+| `full_corpus_embedding_0p6b/` | The full run on all 902,144 messages |
+| `faiss_gpu_exact_search_benchmark/` | Times exact nearest-neighbor search over the embeddings |
 
-Each folder has its own README with the exact command, outputs and success checks.
-Results are summarised in [`docs/METHODS.md`](../../docs/METHODS.md).
+Each folder's README has the command to run it, its outputs and how to check them. Results
+are in [`docs/METHODS.md`](../../docs/METHODS.md).
