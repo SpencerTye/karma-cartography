@@ -1,274 +1,122 @@
-# Phase 1: the Reddit message-event foundation
+# Phase 1: message-event table
 
-## What Phase 1 does
+Turns the raw Reddit files (seven comment files and one submission file) into one table
+with one row per message. Every submission and comment gets the same 29 columns. Every
+source field is kept exactly as stored, and three things are added:
 
-Phase 1 turns the eight raw Parquet files of the Reddit dataset (seven files of comments,
-one of submissions) into **one canonical table with one row per message**: every
-submission and every comment becomes one "message event" with the same set of 29 columns.
-Every field that exists in the source is carried exactly as stored (author names,
-timestamps, scores, the comment body, the submission title, self-text and URL, and so on).
-Three things are added that the source only implies:
+1. `doc_key`, one key per message: the Reddit fullname (`t1_` + id for a comment, `t3_` + id
+   for a submission).
+2. Thread and reply structure: `thread_id` (the submission that starts the thread),
+   `parent_id` (what a comment replies to, joinable to `doc_key`), and two flags for whether
+   that submission or parent is in the data set.
+3. The source file and row each message came from.
 
-1. a single key per message, `doc_key`, the Reddit "fullname" (`t1_` + id for a comment,
-   `t3_` + id for a submission), which is also the key every earlier project artifact used;
-2. the thread and reply structure made explicit: `thread_id` (the submission that starts
-   the thread, so that a submission is the root of its own thread), `parent_id` (what a
-   comment replies to, kept as stored and directly joinable to `doc_key`), and two flags
-   that say whether the referenced submission or parent is actually present in the
-   collected dataset;
-3. provenance: which source file and which row each message came from.
+Nothing is removed or filtered, and the text is not cleaned or tokenized. The later phases
+all start from this table, so any result can be traced back to the original record.
 
-The script then checks the table against the source files, against itself, and against
-every count verified earlier in the project, and writes the tables and figures needed to
-audit it. It writes provenance sidecars for every output and records how long it ran and
-how much memory it used.
-
-## Why it exists
-
-Later phases (semantic, temporal, author, thread, reply, URL and coordination analyses)
-all need the same things: one row per message, a stable key, the author exactly as
-recorded, the time, the thread, the parent, and the original text. Without a canonical
-table every later script would rebuild the same joins from the raw files, each in its own
-slightly different way. Phase 1 builds them once, proves them, and documents them, so that
-any later result can be traced back to the exact original Reddit record.
-
-Phase 1 is a data foundation only. It performs no topic modelling, embeddings,
-clustering, coordination detection, network construction, campaign or disinformation
-classification, and no interpretation. It removes nothing, filters nothing, and does not
-clean, tokenise, stem, stop-word or otherwise transform the text.
+The script then checks the table against the source files and against itself, writes QC
+tables and figures, and records its run time and memory use.
 
 ## Inputs
 
-| Input | Location (relative to the project root) | Role |
-|---|---|---|
-| 7 comment Parquet files (891,397 rows, 11 columns) | `data_sample/comments/2026-07/*.parquet` | source data, read-only |
-| 1 submission Parquet file (10,747 rows, 13 columns) | `data_sample/submissions/2026-07/*.parquet` | source data, read-only |
-| 2 ingest sidecars | `data_sample/{comments,submissions}/2026-07/manifest.jsonl` | compared with the files (row counts, bytes, time ranges) |
-| 5 metadata-inventory tables (optional) | `r_analysis_outputs/metadata_inventory/tables/` | verified counts to reconcile against; skipped if absent |
-| the delivered Tier 2 document table (optional, git-ignored) | `r_analysis_outputs/lda_topics_tier2/tables/document_topic_distribution_K080.csv` | full-population cross-check of keys, fields and text length; skipped if absent |
+| Input | Location (from the repository root) |
+|---|---|
+| 7 comment Parquet files (891,397 rows, 11 columns) | `data_sample/comments/2026-07/*.parquet` |
+| 1 submission Parquet file (10,747 rows, 13 columns) | `data_sample/submissions/2026-07/*.parquet` |
+| Ingest manifests, compared against the files | `data_sample/{comments,submissions}/2026-07/manifest.jsonl` |
+| Optional: earlier metadata-inventory tables, for cross-checking counts | `r_analysis_outputs/metadata_inventory/tables/` |
+| Optional: the earlier LDA document table, for cross-checking keys and text | `r_analysis_outputs/lda_topics_tier2/tables/document_topic_distribution_K080.csv` |
 
-The dataset is a single community (`r/politics`, `t5_2cneq`) over July 2026 UTC. Source
-files are never written to; their SHA256 hashes are taken before and after the run.
+The data are one community (`r/politics`) over July 2026 (UTC). The source files are only
+read, and their SHA256 hashes are taken before and after the run.
 
 ## Outputs
 
-All under this folder (`pipeline/phase1_message_event_foundation/`):
+Written under this folder. The script clears and rewrites these folders on every run.
 
 | Path | Content |
 |---|---|
-| `derived/message_events.parquet` | the canonical table: 902,144 rows, 29 columns, zstd level 3, one row group, 135 MB (git-ignored; regenerated by the script) |
-| `derived/message_events.parquet.manifest.yml` | its provenance sidecar (input hashes, output hash, script hash, parameters, versions, schema difference) |
-| `qc/tables/*.csv` (26 tables) | QC, linkage, coverage, marker counts, thread and author summaries, reconciliation, round-trip and raw-data integrity tables (each with a sidecar) |
-| `qc/figures/*.png` (4 figures) | events per UTC day; thread-size distribution; author-activity distribution; linkage coverage (each with a sidecar) |
-| `environment/` | `run_info.csv`, `stage_timings.csv`, `resource_use.csv`, `r_environment.csv`, `session_info.txt` (each with a sidecar) |
-| `scripts/phase1_build_message_events.R` | the Phase 1 script |
-| `tests/test_phase1_functions.R` | unit test of the script's functions on a synthetic fixture |
-| `DATA_DICTIONARY.md`, `PROVENANCE.md` | field-by-field dictionary; sources, transformations, joins, counts, validation, software |
+| `derived/message_events.parquet` | The table: 902,144 rows, 29 columns (135 MB, zstd level 3) |
+| `qc/tables/*.csv` | 26 QC tables: counts, linkage, field coverage, marker strings, threads, authors, cross-checks, read-back and source-integrity checks |
+| `qc/figures/*.png` | Messages per day, thread sizes, author activity, linkage coverage |
+| `environment/` | Run info, stage timings, memory use, R package versions |
 
-The script owns `derived/`, `qc/tables/`, `qc/figures/` and `environment/`: at the start of
-every run it deletes the `.parquet`, `.csv`, `.png`, `.txt` and `.yml` files there and
-regenerates them.
+Each output has a `.manifest.yml` next to it with the input, output and script hashes,
+parameters and package versions. Every column of the table is described in
+[`docs/DATA_DICTIONARY.md`](../../docs/DATA_DICTIONARY.md).
 
-## How to run
+## Running it
 
-**Requirements.** R 4.5 (developed and run with R 4.5.3 on Windows 10) with the packages
-nanoparquet, dplyr, tidyr, stringi, readr, ggplot2, scales, digest, yaml, jsonlite and ps
-(exact versions in `environment/r_environment.csv`). Do not substitute the `arrow` package
-for reading: version 25.0.1 crashes on these comment files on the development machine.
-Git is optional (it only supplies the commit id written into the sidecars).
+Needs R 4.5 with nanoparquet, dplyr, tidyr, stringi, readr, ggplot2, scales, digest, yaml,
+jsonlite and ps. Use nanoparquet to read the files: arrow 25.0.1 crashed on these comment
+files.
 
-**Command** (from any working directory):
-
-```
-Rscript "pipeline/phase1_message_event_foundation/scripts/phase1_build_message_events.R"
+```bash
+Rscript pipeline/phase1_message_event_foundation/scripts/phase1_build_message_events.R
 ```
 
-On the development machine `Rscript` is not on the PATH; the full path was
-`Rscript`. The script finds the project root from its
-own location (four folders up). Everything else is a parameter with a default:
+The script finds the repository root from its own location. Optional settings:
 
 | Environment variable | Default | Meaning |
 |---|---|---|
-| `PHASE1_PROJECT_DIR` | the folder four levels above the script | project root |
-| `PHASE1_COMMENTS_DIR` | `<root>/data_sample/comments/2026-07` | folder of the comment Parquet files |
-| `PHASE1_SUBMISSIONS_DIR` | `<root>/data_sample/submissions/2026-07` | folder of the submission Parquet files |
+| `PHASE1_PROJECT_DIR` | four folders above the script | repository root |
+| `PHASE1_COMMENTS_DIR` | `<root>/data_sample/comments/2026-07` | comment files |
+| `PHASE1_SUBMISSIONS_DIR` | `<root>/data_sample/submissions/2026-07` | submission files |
 | `PHASE1_COMPRESSION` | `zstd` | Parquet codec (`zstd`, `gzip`, `snappy`, `uncompressed`) |
-| `PHASE1_COMPRESSION_LEVEL` | `3` | codec level for zstd or gzip; always passed explicitly because nanoparquet 0.5.1 writes zstd pages uncompressed when no level is given |
-| `PHASE1_ROW_GROUP_ROWS` | empty (one row group) | rows per Parquet row group |
-| `PHASE1_INVENTORY_DIR` | `<root>/r_analysis_outputs/metadata_inventory/tables` | earlier inventory tables for reconciliation; skipped if absent |
-| `PHASE1_TIER2_TABLE` | `<root>/r_analysis_outputs/lda_topics_tier2/tables/document_topic_distribution_K080.csv` | earlier document table for the cross-check; skipped if absent |
+| `PHASE1_COMPRESSION_LEVEL` | `3` | codec level; set explicitly because nanoparquet 0.5.1 writes zstd pages uncompressed without one |
+| `PHASE1_ROW_GROUP_ROWS` | one row group | rows per Parquet row group |
+| `PHASE1_INVENTORY_DIR` | `<root>/r_analysis_outputs/metadata_inventory/tables` | inventory tables for cross-checks; skipped if missing |
+| `PHASE1_TIER2_TABLE` | `<root>/r_analysis_outputs/lda_topics_tier2/tables/document_topic_distribution_K080.csv` | LDA document table for cross-checks; skipped if missing |
 
-**Unit test** (does not run the pipeline; about two seconds):
+It takes under a minute on this data set.
 
+## Test
+
+```bash
+Rscript pipeline/phase1_message_event_foundation/tests/test_phase1_functions.R
 ```
-Rscript "pipeline/phase1_message_event_foundation/tests/test_phase1_functions.R"
-```
 
-It parses the script, evaluates only its function definitions, pushes a synthetic fixture
-through them (two threads with their submission, one without, a reply to an absent comment,
-`[deleted]` authors, marker and empty texts, a newline in a body) and prints
+The test loads only the script's functions and runs them on a small made-up data set that
+covers every linkage case: threads with and without their submission, a reply to a missing
+comment, `[deleted]` authors, empty and marker texts, and a newline in a body. It prints
 `test_phase1_functions: all checks passed`.
 
-**Expected duration on this dataset:** under one minute (measured below).
+## Checking a run
 
-## What QC outputs should be checked
+- `qc/tables/reconciliation_checks.csv`: 23 checks, all `pass`. The three that need the
+  optional inputs can be `not applicable`. `discrepancies.csv` has the single row `none`.
+- `qc/tables/record_counts.csv` and `source_to_event_mapping.csv`: 891,397 + 10,747 =
+  902,144 rows, every source row used once, `doc_key` unique.
+- `qc/tables/raw_data_integrity.csv`: all 8 source files unchanged.
+- `qc/tables/parquet_roundtrip_check.csv`: all 29 columns read back identical.
+- The console ends with `Phase 1 complete.` and the counts below. Two runs on the same
+  inputs give the same file hash.
 
-In this order:
-
-1. **`qc/tables/reconciliation_checks.csv`** — 23 rows; every `status` must be `pass`
-   (`not applicable` is acceptable only for the three checks that need the optional inputs:
-   inventory values, inventory hashes, Tier 2 cross-check). **`qc/tables/discrepancies.csv`**
-   must contain the single row `none`.
-2. **`qc/tables/record_counts.csv`** and **`source_to_event_mapping.csv`** — source rows
-   891,397 + 10,747 = 902,144; canonical events 902,144; each file contributes exactly its row
-   count; every (file, row) pair once; `doc_key` unique.
-3. **`qc/tables/raw_data_integrity.csv`** — `unchanged_during_run` TRUE for all 8 files.
-4. **`qc/tables/parquet_roundtrip_check.csv`** — `pass` TRUE for all 29 columns (the file on
-   disk reads back identical to what was built).
-5. **`qc/tables/linkage_summary.csv`** and **`parent_linkage.csv`** — comments whose
-   submission is present 883,733 / absent 7,664; whose parent is present 886,046 / absent
-   5,351; threads represented 11,513; submissions with no comment 439.
-6. **`qc/tables/field_coverage.csv`** — 100% usable for every field where it applies, except
-   the stored empty strings (`body` once, `url` 337, `selftext` 10,335) and `raw_json` (null in
-   every record); the min and max of the time fields span the whole of July 2026 UTC.
-7. **`qc/tables/platform_marker_counts.csv`** — the counts of the stored marker strings per
-   field (they are counted, not removed).
-8. **`qc/tables/inventory_reconciliation.csv`** (127 rows, all `equal` TRUE),
-   **`documented_value_checks.csv`** (50 rows, all `equal` TRUE), **`tier2_crosscheck.csv`**
-   (13 rows, all `equal` TRUE).
-9. **`qc/figures/`** — the four figures should look like the delivered ones: comments per day
-   between about 18,700 and 45,100, submissions between 210 and 420; a thread-size histogram
-   with 439 threads at zero comments and a long right tail to 5,124; a straight-line
-   log-log author-activity distribution; two tall "in the dataset" bars with small "absent"
-   bars.
-10. **`environment/run_info.csv`** — `checks_failed` 0 and the counts above.
-
-Every output also has a `.manifest.yml` provenance sidecar (36 in the delivered run).
-
-## What successful completion looks like
-
-The console ends with:
-
-```
-Phase 1 complete.
-  canonical events: 902144 (891397 comments + 10747 submissions) from 902144 source records
-  threads represented: 11513 (10747 with their submission in the dataset, 766 without); distinct author values: 136479
-  comments whose submission is present / absent: 883733 / 7664; whose parent is present / absent: 886046 / 5351
-  checks: 23 pass, 0 not applicable, 0 fail; discrepancies: none
-  raw source files unchanged: TRUE; elapsed 51.7 s
-```
-
-and `derived/message_events.parquet` exists with the SHA256 recorded in its sidecar. Two
-runs on the same inputs give the same file hash (the write is deterministic).
-
-## Results of the delivered run (2026-09-09)
+## Results (run of 2026-09-09)
 
 | Quantity | Value |
 |---|---:|
-| source records (comments + submissions) | 891,397 + 10,747 = 902,144 |
-| canonical events | 902,144 (one per source record; nothing dropped) |
-| distinct `doc_key` | 902,144 |
-| threads represented (distinct `thread_id`) | 11,513 = 10,747 submissions + 766 threads whose submission was not collected |
-| threads referenced by at least one comment | 11,074 (10,308 with the submission present, 766 without) |
-| submissions with no comment in the dataset | 439 |
-| comments whose submission is present / absent | 883,733 / 7,664 |
-| comments whose parent is present / absent | 886,046 / 5,351 |
-| comments replying to a comment / to the submission | 541,931 (538,485 present, 3,446 absent) / 349,466 (347,561 present, 1,905 absent) |
-| distinct author values: all / comments / submissions / both | 136,479 / 135,371 / 2,321 / 1,213 |
-| events with `author` = `[deleted]` | 31,333 (30,996 comments + 337 submissions) |
-| `created_utc` range | comments 2026-07-01 00:00:02 to 2026-07-31 23:59:59 UTC; submissions 00:02:20 to 23:58:02; 31 UTC days each, none empty |
-| comments per UTC day: min / max | 18,669 (Jul 26) / 45,099 (Jul 7); submissions 210 (Jul 4) / 420 (Jul 15) |
-| comments per thread (threads with comments) | median 14, mean 80.5, p90 168, max 5,124 |
-| events per author value | 61,016 author values (44.7%) have one event; 7 have more than 1,000 |
-| stored marker values | comment `body`: `[removed]` 27,501, `[deleted]` 3,496, `[ Removed by Reddit ]` 1,009, empty 1; `title`: `[ Removed by moderator ]` 368, `[ Removed by Reddit ]` 17; `selftext`: empty 10,335, `[removed]` 339, `[deleted]` 47; `url` empty 337 |
-| checks | 23 pass; 127 of 127 inventory values, 50 of 50 documented values, 13 of 13 Tier 2 items reproduced; 0 discrepancies |
+| Messages (comments + submissions) | 891,397 + 10,747 = 902,144 |
+| Threads | 11,513 (766 of them without their submission in the data) |
+| Submissions with no comments | 439 |
+| Comments whose submission is present / missing | 883,733 / 7,664 |
+| Comments whose parent is present / missing | 886,046 / 5,351 |
+| Distinct author names | 136,479 |
+| Messages by `[deleted]` authors | 31,333 |
+| Comments per day | 18,669 (Jul 26) to 45,099 (Jul 7) |
+| Comments per thread | median 14, mean 80.5, max 5,124 |
+| Checks | 23 pass, 0 fail |
+| Run time / peak memory | 51.7 s / 2.8 GB (Ryzen 9 3900X, Windows 10, R 4.5.3) |
 
-Full detail in `qc/tables/`; the reconciliation sources are named row by row in
-`documented_value_checks.csv` and `inventory_reconciliation.csv`.
+## Limitations
 
-## What this phase does NOT establish analytically
-
-- Nothing about topics, semantics, similarity, sentiment, stance, coordination, campaigns,
-  bots, or the meaning of any text. The `text` column is a convenience copy of the stored
-  text, not a processed representation.
-- Nothing about who an account is. `author` is the stored string; `[deleted]` is one stored
-  value that stands for an unknown number of accounts, and nothing links it to anything.
-  `AutoModerator` and `politics-ModTeam` are stored values like any other.
-- Nothing about removed content. The marker strings are counted as stored; the original
-  text of those records is not in the source, and no record is labelled noise, spam or
-  removed by this phase.
-- Reply depth or full ancestry. Only the direct parent is stored; a chain can be followed
-  through `parent_id` where every ancestor is present, and the flags say where it is not.
-- Completeness of the collection. 766 threads (7,664 comments) have no submission in the
-  dataset, 5,351 comments have no parent in it, and the stored `num_comments` disagrees
-  with the comments collected for 5,404 submissions; whether the dataset is meant to be a
-  closed set is not established (see the limitations).
-- Anything about other subreddits or months: the dataset is one subreddit over one month.
-- How the phase scales to larger datasets: only the run on this dataset was measured.
-
-## Known limitations and unresolved points
-
-1. The mutable fields `score`, `num_comments` and `upvote_ratio` are point-in-time values
-   of unknown vintage; `retrieved_on` (10 s to about 36 h after creation) may or may not
-   date them.
-2. `raw_json` is null in every record; the column is carried so that the canonical schema
-   matches the declared source schema, but it holds nothing here.
-3. Submission `score` is never negative while comment `score` is; the data do not say
-   whether the submission value is floored.
-4. The comment and submission files were written by different tools (parquet-cpp-arrow 17
-   and DuckDB 1.5.5) with different string annotations; only this dataset was inspected.
-5. Text lengths are Unicode code points; one comment body has 10,479 characters, above
-   Reddit's nominal limit, and is kept as stored.
-6. The canonical file (135 MB) is larger than the source (59 MB) because `text` duplicates
-   the stored text for every record and the writer's zstd level 3 compresses less than the
-   source writer's settings; both are stated choices, adjustable through the parameters.
-7. The Tier 2 cross-check and the inventory reconciliation depend on artifacts that may not
-   travel with the repository (the Tier 2 table is git-ignored); without them the
-   corresponding checks report `not applicable`, and the remaining 20 checks still prove the
-   table against the source files.
-
-## Runtime and resource use (measured on the delivered run)
-
-Single R process, no parallel workers, on an AMD Ryzen 9 3900X (12 cores, 24 logical
-processors), 64 GB RAM, Windows 10 x64, R 4.5.3; data on a local drive
-(`environment/resource_use.csv`, `stage_timings.csv`).
-
-| Measure | Value |
-|---|---:|
-| wall clock, start to the environment record | 47.6 s |
-| wall clock including the 36 provenance sidecars | 51.7 s |
-| CPU time (user / system) | 50.6 s / 3.7 s |
-| peak working set of the R process | 2,818 MB (reached while reading the 312 MB Tier 2 table for the cross-check; 1,614 MB before that stage) |
-| working set at the end | 1,502 MB |
-| R allocator peak (`gc()` max used) | 1,772 MB |
-| canonical events per wall-clock second | 18,971 |
-| source Parquet / canonical Parquet | 61,557,134 bytes / 141,869,739 bytes |
-
-Stage timings: source hashing 0.8 s; read 4.4 s; build 2.2 s; write and read-back
-comparison 9.5 s; QC tables 21.6 s; reconciliation 6.2 s; figures 1.2 s; post-run hashing
-0.4 s; checks 0.9 s; environment record and table writing under 1 s; sidecars about 4 s.
-
-## Environment
-
-R 4.5.3 (2026-03-11 ucrt), x86_64-w64-mingw32, Windows 10 x64, locale
-English_United States.utf8. nanoparquet 0.5.1, dplyr 1.2.0, tidyr 1.3.2, stringi 1.8.7,
-readr 2.2.0, ggplot2 4.0.2, scales 1.4.0, digest 0.6.39, yaml 2.3.12, jsonlite 2.0.0,
-ps 1.9.1. Full `sessionInfo()` in `environment/session_info.txt`; every sidecar repeats the
-package versions and the script hash.
-
-## Files in `qc/tables/`
-
-| File | Content |
-|---|---|
-| `reconciliation_checks.csv`, `discrepancies.csv` | the 23 checks with status and detail; discrepancies (none) |
-| `record_counts.csv`, `source_to_event_mapping.csv`, `duplicate_id_checks.csv` | source rows per file, events per file, totals; the one-to-one mapping checks; identifier uniqueness |
-| `source_files.csv`, `source_schema.csv`, `raw_data_integrity.csv` | per-file footer facts, rows read, ingest-manifest comparison; declared column types; SHA256 before and after the run and against the inventory |
-| `canonical_parquet_schema.csv`, `parquet_roundtrip_check.csv` | the written file's declared types; the column-by-column read-back comparison |
-| `field_coverage.csv` | every canonical field by record type: missing, empty, usable, distinct, range |
-| `platform_marker_counts.csv`, `bracketed_value_counts.csv` | exact marker strings per field; every fully bracketed stored value occurring at least twice |
-| `linkage_summary.csv`, `parent_linkage.csv` | thread, parent, thread-count and author-count facts; parent kind by presence of parent and of submission |
-| `thread_summary.csv`, `thread_size_distribution.csv`, `thread_size_summary.csv` | one row per thread (11,513); comments-per-thread bands; quantiles by population |
-| `author_activity_summary.csv`, `author_activity_distribution.csv` | one row per stored author value (136,479); events-per-author bands |
-| `timestamp_coverage.csv`, `records_by_day.csv` | time ranges, day coverage, whole-second check, ingestion order; events per UTC day by record type |
-| `inventory_reconciliation.csv`, `documented_value_checks.csv`, `tier2_crosscheck.csv` | the 127 inventory values, the 50 documented values, the 13 Tier 2 items, each with the measured value |
-| `parameters.csv` | every rule and parameter of the run |
+- `score`, `num_comments` and `upvote_ratio` change over time on Reddit; the data don't say
+  exactly when they were captured.
+- `raw_json` is empty in every record. It is kept so the schema matches the source.
+- 766 threads have no submission in the data, 5,351 comments have no parent in it, and
+  `num_comments` disagrees with the collected comments for 5,404 submissions, so the
+  collection is not a closed set.
+- Only the direct parent is stored. Longer reply chains can be followed through `parent_id`
+  where every message in the chain is present.
+- Text lengths are counted in Unicode code points. One comment has 10,479 characters, more
+  than Reddit's stated limit, and is kept as stored.

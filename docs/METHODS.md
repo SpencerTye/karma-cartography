@@ -56,8 +56,9 @@ of GPU memory. HDBSCAN found 5,167 clusters. 457,880 documents (50.8%) were assi
 cluster and 444,264 were left as noise. The median cluster has 26 documents and the largest
 has 24,862.
 
-A trial on three days of data (101,722 documents) and a parameter sensitivity and stability
-study were run first. The run checks that every output row still lines up with its
+A trial on three days of data (101,722 documents) was run first. Afterwards, a sensitivity
+and stability study on the same three days changed one UMAP or HDBSCAN setting at a time and
+repeated the baseline five times. The run checks that every output row still lines up with its
 `doc_key`, that all coordinates are finite, and that the input embeddings were not changed.
 The clusters are not named or interpreted in this phase.
 
