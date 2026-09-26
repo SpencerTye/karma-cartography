@@ -1,3 +1,4 @@
 # Everything the unit tests need (CPU only; no GPU, data or models required).
 numpy>=2.4
-torch>=2.4
+pyyaml
+# torch (CPU build): pip install torch --index-url https://download.pytorch.org/whl/cpu

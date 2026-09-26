@@ -78,6 +78,7 @@ The pure functions of every step have unit tests that run without a GPU, data or
 
 ```bash
 pip install -r environment/requirements-tests.txt
+pip install torch --index-url https://download.pytorch.org/whl/cpu
 python pipeline/phase2_semantic_embeddings/full_corpus_embedding_0p6b/tests/test_embed_full_corpus_functions.py
 Rscript pipeline/phase1_message_event_foundation/tests/test_phase1_functions.R
 ```
