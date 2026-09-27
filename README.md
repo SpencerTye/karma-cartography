@@ -26,7 +26,7 @@ The methods are adapted from the ones I use to integrate multi-omics data in my 
    UMAP and HDBSCAN on the GPU with RAPIDS cuML: 5,167 clusters in about two minutes.
 4. **[Cluster description and QC](pipeline/phase4_semantic_structure_description_qc/)** (R,
    in progress). Keywords, representative messages and metadata for each cluster, automated
-   checks, and a sample for manual review.
+   checks, a sample for manual review, and figures of the 15 largest topics.
 5. Change over time, threads, links and coordination (planned).
 
 Numbers and methods for each phase are in [`docs/METHODS.md`](docs/METHODS.md).

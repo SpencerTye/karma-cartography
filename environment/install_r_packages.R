@@ -4,7 +4,7 @@ pkgs <- c(
   # pipeline
   "nanoparquet", "data.table", "dplyr", "tidyr", "tibble", "stringi", "stringr",
   "Matrix", "ggplot2", "scales", "digest", "jsonlite", "yaml", "lubridate", "readr",
-  "purrr", "patchwork", "processx", "ps",
+  "purrr", "patchwork", "processx", "ps", "arrow", "ggforce", "ggrepel",
   # legacy topic-model approach
   "quanteda", "stm", "text2vec", "tidytext", "stopwords", "lexicon", "qdapDictionaries",
   "lsa", "glmnet", "clue", "ggupset", "openxlsx", "readxl", "curl", "xml2", "zip", "lgr"

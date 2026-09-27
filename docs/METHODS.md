@@ -75,6 +75,14 @@ Folder: `pipeline/phase4_semantic_structure_description_qc/`
   automated quality checks. There is no randomness, and ties are broken by fixed rules.
 - 4c picks a sample of clusters (the largest plus a random set) and builds a package for
   each one for manual review. The manual review is the next step.
+- 4d names the 15 largest topic clusters from their keywords, leaving out the removed-post
+  placeholder cluster, and marks them on the map along with the islands outside the main
+  mass. It also re-embeds those topics' 58,615 posts in a new 2-D UMAP (cosine, 15
+  neighbors, min_dist 0.5, fixed seed), which is used only for the figure below.
+
+![Full map, zoomed core and topic table](images/topic_structure.png)
+
+![The 15 largest topics re-embedded on their own](images/top_topics_umap.png)
 
 Phases 1 to 4 do not try to detect coordination or disinformation. That comes after the
 clusters have been described and checked by hand.
