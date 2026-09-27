@@ -11,9 +11,14 @@ development set; the pipeline will be scaled to the full corpus once it is valid
 longer-term aim is to follow how narratives and disinformation spread between communities.
 The methods are adapted from the ones I use to integrate multi-omics data in my PhD work.
 
-![2-D UMAP of all 902,144 messages](docs/images/umap_density.png)
+![Full map, zoomed core and the largest topics](docs/images/topic_structure.png)
 
-*2-D UMAP of all 902,144 messages, colored by density (log scale).*
+*All 902,144 messages in a 2-D UMAP, with the outlying islands named, the core zoomed and the
+15 largest topic clusters numbered.*
+
+![The 15 largest topics re-embedded on their own](docs/images/top_topics_umap.png)
+
+*The 58,615 posts in those 15 topics, re-embedded on their own (min_dist 0.5).*
 
 ## Phases
 
